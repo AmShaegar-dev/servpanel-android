@@ -215,11 +215,11 @@ Workflow `.github/workflows/android.yml` собирает **release** APK с п�
 подписью (ключ берётся из GitHub Secrets) и публикует его в Releases:
 
 - push в `main` или pull request — сборка, lint и артефакт;
-- тег `v*` (например, `v1.3.1`) — сборка и автоматическая публикация релиза
+- тег `v*` (например, `v1.3.2`) — сборка и автоматическая публикация релиза
   с файлами `servpanel-mobile.apk` и `servpanel-mobile-<версия>.apk`;
 - ручной запуск (`workflow_dispatch`) с галочкой «release».
 
-`versionCode` вычисляется из тега: `v1.3.1` → `10301`. Поэтому обновления
+`versionCode` вычисляется из тега: `v1.3.2` → `10302`. Поэтому обновления
 всегда ставятся поверх предыдущей версии.
 
 Секреты репозитория (`Settings → Secrets and variables → Actions`):

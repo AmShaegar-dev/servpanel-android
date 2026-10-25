@@ -137,6 +137,24 @@ object PanelUrl {
             value.startsWith("https://", ignoreCase = true)
     }
 
+    /**
+     * Адрес для кнопки «Проверить подключение».
+     *
+     * Если схему не ввели, она намеренно НЕ подставляется: `PanelApi.probe`
+     * сам попробует https, а затем http. Иначе явный `http://` на https-порту
+     * гарантирует ошибку `unexpected end of stream`.
+     */
+    fun probeTarget(raw: String, port: Int): String {
+        val value = raw.trim()
+        if (value.isEmpty()) return value
+        if (hasScheme(value)) return withPort(normalize(value) ?: value, port)
+        val parsed = "https://$value".toHttpUrlOrNull() ?: return value
+        val targetPort = if (port > 0) port else parsed.port.takeIf { it != 443 }
+        val host = if (parsed.host.contains(':')) "[${parsed.host}]" else parsed.host
+        val path = parsed.encodedPath.trimEnd('/')
+        return if (targetPort != null) "$host:$targetPort$path" else "$host$path"
+    }
+
     /** Подставляет порт в адрес (0 — вернуть адрес как есть). */
     fun withPort(url: String, port: Int): String {
         if (port <= 0) return url.trimEnd('/')

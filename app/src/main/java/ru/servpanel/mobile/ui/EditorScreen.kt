@@ -192,6 +192,8 @@ fun EditorScreen(
                         text = when {
                             url.isBlank() -> "Можно вводить без http:// — приложение подберёт схему само"
                             normalizedUrl == null -> "Проверьте адрес: нужен корректный домен или IP"
+                            !PanelUrl.hasScheme(url) ->
+                                "Без схемы: сначала пробуется https, затем http"
                             else -> "Будет сохранено как $normalizedUrl"
                         },
                         maxLines = 2,
@@ -281,8 +283,7 @@ fun EditorScreen(
                 onClick = {
                     testing = true
                     probeResult = null
-                    val probeTarget = normalizedUrl?.let { PanelUrl.withPort(it, panelPortValue ?: 0) }
-                        ?: url
+                    val probeTarget = PanelUrl.probeTarget(url, panelPortValue ?: 0)
                     onProbe(probeTarget, allowInsecure) { result ->
                         testing = false
                         probeResult = result
