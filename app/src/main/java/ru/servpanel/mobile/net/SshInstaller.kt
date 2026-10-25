@@ -331,7 +331,7 @@ class SshInstaller {
         private const val CONNECT_TIMEOUT_MS = 20_000
         private const val INSTALL_TIMEOUT_MS = 20 * 60 * 1000L
         private const val INSTALL_SCRIPT_URL =
-            "https://raw.githubusercontent.com/makar19977v-glitch/servpanel/main/install.sh"
+            "https://raw.githubusercontent.com/AmShaegar-dev/servpanel/main/install.sh"
 
         /** Отпечаток в формате, который показывает `ssh-keygen -lf`. */
         fun sha256(key: ByteArray): String {

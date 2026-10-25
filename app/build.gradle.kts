@@ -4,14 +4,14 @@ plugins {
     id("org.jetbrains.kotlin.plugin.compose")
 }
 
-// Версия задаётся при сборке: -PappVersionName=1.2.0 -PappVersionCode=3
+// Версия задаётся при сборке: -PappVersionName=1.3.1 -PappVersionCode=10301
 // CI подставляет имя тега и номер запуска, локально работают значения по умолчанию.
-val appVersionName = (findProperty("appVersionName") as String?)?.takeIf { it.isNotBlank() } ?: "1.3.0"
-val appVersionCode = (findProperty("appVersionCode") as String?)?.toIntOrNull() ?: 4
+val appVersionName = (findProperty("appVersionName") as String?)?.takeIf { it.isNotBlank() } ?: "1.3.1"
+val appVersionCode = (findProperty("appVersionCode") as String?)?.toIntOrNull() ?: 10301
 
 // Репозиторий, на который ссылается экран «Ещё» и откуда качаются обновления.
 val githubRepo = (findProperty("githubRepo") as String?)?.takeIf { it.isNotBlank() }
-    ?: "makar19977v-glitch/servpanel-android"
+    ?: "AmShaegar-dev/servpanel-android"
 
 // Release-подпись берётся из окружения (в CI — из GitHub Secrets).
 // Без ключа release собирается debug-подписью, чтобы APK всё равно ставился.

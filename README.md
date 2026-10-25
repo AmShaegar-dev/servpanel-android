@@ -1,6 +1,6 @@
 # Servpanel Mobile
 
-Нативное Android-приложение для панели [Servpanel](https://github.com/makar19977v-glitch/servpanel).
+Нативное Android-приложение для панели [Servpanel](https://github.com/AmShaegar-dev/servpanel).
 Никакого WebView: все разделы панели переписаны на Compose и работают через
 REST API, поэтому интерфейс ощущается как приложение, а не как браузер.
 
@@ -14,12 +14,12 @@ REST API, поэтому интерфейс ощущается как прило
 
 ## Скачать
 
-[![Последний релиз](https://img.shields.io/github/v/release/makar19977v-glitch/servpanel-android?label=release&color=5B8CFF)](https://github.com/makar19977v-glitch/servpanel-android/releases/latest)
-[![Android 8.0+](https://img.shields.io/badge/Android-8.0%2B-2DD4A7)](https://github.com/makar19977v-glitch/servpanel-android/releases/latest)
-[![Build](https://github.com/makar19977v-glitch/servpanel-android/actions/workflows/android.yml/badge.svg)](https://github.com/makar19977v-glitch/servpanel-android/actions/workflows/android.yml)
+[![Последний релиз](https://img.shields.io/github/v/release/AmShaegar-dev/servpanel-android?label=release&color=5B8CFF)](https://github.com/AmShaegar-dev/servpanel-android/releases/latest)
+[![Android 8.0+](https://img.shields.io/badge/Android-8.0%2B-2DD4A7)](https://github.com/AmShaegar-dev/servpanel-android/releases/latest)
+[![Build](https://github.com/AmShaegar-dev/servpanel-android/actions/workflows/android.yml/badge.svg)](https://github.com/AmShaegar-dev/servpanel-android/actions/workflows/android.yml)
 
-- **APK, последняя версия:** [servpanel-mobile.apk](https://github.com/makar19977v-glitch/servpanel-android/releases/latest/download/servpanel-mobile.apk)
-- **Все версии и список изменений:** [Releases](https://github.com/makar19977v-glitch/servpanel-android/releases)
+- **APK, последняя версия:** [servpanel-mobile.apk](https://github.com/AmShaegar-dev/servpanel-android/releases/latest/download/servpanel-mobile.apk)
+- **Все версии и список изменений:** [Releases](https://github.com/AmShaegar-dev/servpanel-android/releases)
 - Требуется **Android 8.0** (API 26) или новее.
 
 APK подписан постоянным release-ключом, поэтому обновления ставятся поверх
@@ -215,11 +215,11 @@ Workflow `.github/workflows/android.yml` собирает **release** APK с п�
 подписью (ключ берётся из GitHub Secrets) и публикует его в Releases:
 
 - push в `main` или pull request — сборка, lint и артефакт;
-- тег `v*` (например, `v1.2.1`) — сборка и автоматическая публикация релиза
+- тег `v*` (например, `v1.3.1`) — сборка и автоматическая публикация релиза
   с файлами `servpanel-mobile.apk` и `servpanel-mobile-<версия>.apk`;
 - ручной запуск (`workflow_dispatch`) с галочкой «release».
 
-`versionCode` вычисляется из тега: `v1.2.1` → `10201`. Поэтому обновления
+`versionCode` вычисляется из тега: `v1.3.1` → `10301`. Поэтому обновления
 всегда ставятся поверх предыдущей версии.
 
 Секреты репозитория (`Settings → Secrets and variables → Actions`):
@@ -237,12 +237,12 @@ Workflow `.github/workflows/android.yml` собирает **release** APK с п�
 Новый релиз:
 
 ```bash
-git tag -a v1.2.2 -m "Servpanel Mobile 1.2.2"
-git push origin v1.2.2
+git tag -a v1.3.2 -m "Servpanel Mobile 1.3.2"
+git push origin v1.3.2
 ```
 
 Постоянная ссылка на последний APK:
-`https://github.com/makar19977v-glitch/servpanel-android/releases/latest/download/servpanel-mobile.apk`
+`https://github.com/AmShaegar-dev/servpanel-android/releases/latest/download/servpanel-mobile.apk`
 
 ## Первый запуск
 
