@@ -1,0 +1,17 @@
+.gradle/
+.kotlin/
+build/
+local.properties
+.idea/
+*.iml
+captures/
+.DS_Store
+app/release/
+app/build/
+dist/
+
+# Ключи подписи и параметры сборки — только локально / в GitHub Secrets
+*.jks
+*.keystore
+keystore.properties
+signing.properties
