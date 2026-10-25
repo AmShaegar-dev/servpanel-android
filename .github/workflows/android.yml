@@ -1,0 +1,147 @@
+name: Android
+
+on:
+  push:
+    branches: [ main, master ]
+    tags: [ 'v*' ]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      release:
+        description: 'Собрать APK и опубликовать релиз'
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: android-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.name }}
+    env:
+      KEYSTORE_BASE64: ${{ secrets.SERVPANEL_KEYSTORE_BASE64 }}
+      KEYSTORE_PASSWORD: ${{ secrets.SERVPANEL_KEYSTORE_PASSWORD }}
+      KEY_ALIAS: ${{ secrets.SERVPANEL_KEY_ALIAS }}
+      KEY_PASSWORD: ${{ secrets.SERVPANEL_KEY_PASSWORD }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Проверка Gradle Wrapper
+        uses: gradle/actions/wrapper-validation@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Подготовить release-ключ
+        run: |
+          set -euo pipefail
+          if [ -n "${KEYSTORE_BASE64}" ]; then
+            echo "${KEYSTORE_BASE64}" | base64 -d > "${RUNNER_TEMP}/release.jks"
+            {
+              echo "SERVPANEL_KEYSTORE=${RUNNER_TEMP}/release.jks"
+              echo "SERVPANEL_KEYSTORE_PASSWORD=${KEYSTORE_PASSWORD}"
+              echo "SERVPANEL_KEY_ALIAS=${KEY_ALIAS}"
+              echo "SERVPANEL_KEY_PASSWORD=${KEY_PASSWORD}"
+            } >> "$GITHUB_ENV"
+            echo "Подпись: release-ключ из Secrets"
+          else
+            echo "::warning::Секреты подписи не заданы — APK будет подписан debug-ключом"
+          fi
+
+      - name: Версия
+        id: version
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            VERSION_NAME="${GITHUB_REF_NAME#v}"
+          else
+            VERSION_NAME="1.2.0-dev.${GITHUB_RUN_NUMBER}"
+          fi
+          # versionCode из тега: 1.2.0 -> 10200, чтобы обновления шли поверх
+          # любой предыдущей сборки, а не зависели от номера запуска CI.
+          if [[ "${VERSION_NAME}" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+) ]]; then
+            MAJOR="${BASH_REMATCH[1]}"
+            MINOR="${BASH_REMATCH[2]}"
+            PATCH="${BASH_REMATCH[3]}"
+            VERSION_CODE=$((10#$MAJOR * 10000 + 10#$MINOR * 100 + 10#$PATCH))
+          else
+            VERSION_CODE=$((100000 + GITHUB_RUN_NUMBER))
+          fi
+          echo "name=${VERSION_NAME}" >> "$GITHUB_OUTPUT"
+          echo "APP_VERSION_NAME=${VERSION_NAME}" >> "$GITHUB_ENV"
+          echo "APP_VERSION_CODE=${VERSION_CODE}" >> "$GITHUB_ENV"
+          echo "Версия ${VERSION_NAME} (code ${VERSION_CODE})"
+
+      - name: Сборка release APK и lint
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleRelease lintDebug --no-daemon --stacktrace \
+            -PappVersionName="${APP_VERSION_NAME}" \
+            -PappVersionCode="${APP_VERSION_CODE}"
+
+      - name: Проверить подпись и упаковать
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          APK=app/build/outputs/apk/release/app-release.apk
+          APKSIGNER=$(find "${ANDROID_HOME}/build-tools" -name apksigner -type f | sort -V | tail -1)
+          "${APKSIGNER}" verify --print-certs "${APK}"
+          cp "${APK}" "dist/servpanel-mobile-${APP_VERSION_NAME}.apk"
+          cp "${APK}" "dist/servpanel-mobile.apk"
+          sha256sum dist/*.apk
+
+      - name: Загрузить APK как артефакт
+        uses: actions/upload-artifact@v4
+        with:
+          name: servpanel-mobile-${{ env.APP_VERSION_NAME }}
+          path: dist/*.apk
+          if-no-files-found: error
+
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v') || inputs.release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Скачать APK
+        uses: actions/download-artifact@v4
+        with:
+          name: servpanel-mobile-${{ needs.build.outputs.version }}
+          path: dist
+
+      - name: Опубликовать релиз
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || format('v{0}', needs.build.outputs.version) }}
+          name: Servpanel Mobile ${{ needs.build.outputs.version }}
+          generate_release_notes: true
+          prerelease: ${{ contains(needs.build.outputs.version, '-') }}
+          files: dist/*.apk
+          body: |
+            ## Установка
+
+            1. Скачайте `servpanel-mobile.apk` ниже.
+            2. Разрешите установку из неизвестных источников, если Android попросит.
+            3. Откройте приложение и добавьте сервер панели Servpanel.
+
+            Требуется Android 8.0 (API 26) или новее.
+
+            **Важно:** обновления ставятся поверх предыдущей версии, только если
+            APK подписан тем же ключом. Не удаляйте приложение между обновлениями —
+            иначе список серверов будет потерян.
+
+            Постоянная ссылка на последний APK:
+            https://github.com/${{ github.repository }}/releases/latest/download/servpanel-mobile.apk
