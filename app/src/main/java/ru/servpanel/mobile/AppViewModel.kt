@@ -25,6 +25,7 @@ sealed interface Screen {
     data object Servers : Screen
     data class Workspace(val serverId: String) : Screen
     data class Editor(val serverId: String?) : Screen
+    data object InstallPanel : Screen
 }
 
 enum class WorkspaceTab(val title: String) {
@@ -122,6 +123,14 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     fun closeEditor() {
         screen = editorReturn
+    }
+
+    fun openInstall() {
+        screen = Screen.InstallPanel
+    }
+
+    fun closeInstall() {
+        screen = Screen.Servers
     }
 
     fun selectTab(tab: WorkspaceTab) {
@@ -302,7 +311,22 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         auth = auth + (server.id to authOf(server.id).copy(status = AuthStatus.Checking, error = null))
         viewModelScope.launch {
             try {
-                val result = client(server).login(username, password, code)
+                var used = server
+                val result = try {
+                    client(used).login(username, password, code)
+                } catch (e: PanelApiException) {
+                    // Панель за nginx: HTTP отвечает 301 на HTTPS, OkHttp
+                    // превращает POST в GET, и /api/login отдаёт 404.
+                    // Пробуем тот же адрес по HTTPS и запоминаем его.
+                    val secure = server.httpsVariant
+                    if (e.status != 404 || secure == null) throw e
+                    val secureClient = PanelClient(secure, getApplication())
+                    val upgraded = secureClient.login(username, password, code)
+                    clients[server.id] = secureClient
+                    applyUrlUpgrade(secure)
+                    used = secure
+                    upgraded
+                }
                 auth = auth + (
                     server.id to AuthState(
                         status = AuthStatus.LoggedIn,
@@ -312,7 +336,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     )
                     )
                 refreshTick++
-                refreshOne(server)
+                refreshOne(used)
                 onResult(Result.success(result))
             } catch (e: Exception) {
                 val message = e.message ?: "Не удалось войти"
@@ -325,6 +349,13 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 onResult(Result.failure(e))
             }
         }
+    }
+
+    /** Тихая замена адреса сервера (например, http → https) без сброса сессии. */
+    private fun applyUrlUpgrade(profile: ServerProfile) {
+        val list = servers.map { if (it.id == profile.id) profile else it }
+        servers = list
+        store.write(list)
     }
 
     fun logout(server: ServerProfile) {

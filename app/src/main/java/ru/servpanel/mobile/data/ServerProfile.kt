@@ -56,6 +56,19 @@ data class ServerProfile(
     val host: String
         get() = apiUrl.toHttpUrlOrNull()?.host ?: displayHost
 
+    /**
+     * Тот же адрес, но по HTTPS. Нужен, когда сервер отвечает на HTTP
+     * редиректом 301: POST при переходе превращается в GET, и /api/login
+     * отвечает 404. Возвращает null, если адрес уже HTTPS.
+     */
+    val httpsVariant: ServerProfile?
+        get() {
+            val parsed = url.toHttpUrlOrNull() ?: return null
+            if (parsed.scheme == "https") return null
+            val secure = parsed.newBuilder().scheme("https").build().toString().trimEnd('/')
+            return copy(url = secure)
+        }
+
     fun toJson(): JSONObject = JSONObject().apply {
         put("id", id)
         put("name", name)

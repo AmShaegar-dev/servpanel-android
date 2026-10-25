@@ -28,6 +28,7 @@ import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.OpenInNew
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Terminal
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -84,7 +85,8 @@ fun ServersScreen(
     onDelete: (ServerProfile) -> Unit,
     onRefreshAll: () -> Unit,
     onRefreshOne: (ServerProfile) -> Unit,
-    onOpenExternal: (String) -> Unit
+    onOpenExternal: (String) -> Unit,
+    onInstall: () -> Unit
 ) {
     val onlineCount = servers.count { health[it.id]?.online == true }
     val clientsOnline = servers.sumOf { health[it.id]?.clientsOnline ?: 0 }
@@ -148,6 +150,8 @@ fun ServersScreen(
             if (servers.isEmpty()) {
                 item { EmptyServersCard(onAdd) }
             }
+
+            item { InstallPanelCard(onInstall) }
 
             items(items = servers, key = { it.id }) { server ->
                 ServerCard(
@@ -283,6 +287,49 @@ private fun EmptyServersCard(onAdd: () -> Unit) {
                 Icon(Icons.Filled.Add, contentDescription = null, modifier = Modifier.size(18.dp))
                 Spacer(Modifier.width(6.dp))
                 Text("Добавить сервер")
+            }
+        }
+    }
+}
+
+@Composable
+private fun InstallPanelCard(onInstall: () -> Unit) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(18.dp),
+        colors = CardDefaults.cardColors(containerColor = PanelSurface),
+        border = BorderStroke(1.dp, PanelBorder)
+    ) {
+        Column(Modifier.padding(16.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(
+                    Modifier
+                        .size(38.dp)
+                        .background(PanelAccent.copy(alpha = 0.12f), RoundedCornerShape(12.dp)),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        Icons.Filled.Terminal,
+                        contentDescription = null,
+                        tint = PanelAccent,
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
+                Spacer(Modifier.width(12.dp))
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        "Установить панель по SSH",
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.SemiBold,
+                        color = PanelText
+                    )
+                    Text(
+                        "На чистый сервер: домен или IP, пароль и порт",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = PanelMuted
+                    )
+                }
+                TextButton(onClick = onInstall) { Text("Открыть") }
             }
         }
     }

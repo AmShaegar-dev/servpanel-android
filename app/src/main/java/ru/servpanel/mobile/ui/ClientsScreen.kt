@@ -4,6 +4,7 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -60,6 +61,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import ru.servpanel.mobile.AppViewModel
 import ru.servpanel.mobile.data.BulkConfig
@@ -96,6 +98,12 @@ fun ClientsScreen(vm: AppViewModel, server: ServerProfile) {
     var loading by remember(server.id) { mutableStateOf(true) }
     var reload by remember(server.id) { mutableIntStateOf(0) }
     var query by remember(server.id) { mutableStateOf("") }
+    var sort by remember(server.id) { mutableStateOf(ClientSort.Activity) }
+    var ascending by remember(server.id) { mutableStateOf(false) }
+    // Скорость считаем по двум замерам /api/clients: (rx+tx) / время между
+    // замерами. Так не нужно дёргать историю по каждому клиенту.
+    var speeds by remember(server.id) { mutableStateOf<Map<String, Long>>(emptyMap()) }
+    var speedSamples by remember(server.id) { mutableStateOf<Map<String, SpeedSample>>(emptyMap()) }
 
     var showCreate by remember { mutableStateOf(false) }
     var showBulk by remember { mutableStateOf(false) }
@@ -113,7 +121,25 @@ fun ClientsScreen(vm: AppViewModel, server: ServerProfile) {
         if (clients == null) loading = true
         error = null
         try {
-            clients = vm.call(server) { clients() }
+            val first = vm.call(server) { clients() }
+            clients = first
+            loading = false
+
+            var measured = measureSpeeds(speedSamples, first, System.currentTimeMillis())
+            // Первый замер скорости всегда нулевой. Делаем второй через пару
+            // секунд, но только если для кого-то ещё нет базового замера:
+            // иначе на простое это лишний запрос при каждом обновлении.
+            val missing = first.any { speedSamples[it.name] == null }
+            if (missing) {
+                delay(2500)
+                val second = vm.call(server) { clients() }
+                measured = measureSpeeds(measured.second, second, System.currentTimeMillis())
+                clients = second
+            }
+            speeds = measured.first
+            speedSamples = measured.second
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
         } catch (e: Exception) {
             if (clients == null) error = e.message ?: "Не удалось загрузить клиентов"
         } finally {
@@ -130,6 +156,14 @@ fun ClientsScreen(vm: AppViewModel, server: ServerProfile) {
     val filtered = if (query.isBlank()) list else list.filter {
         it.name.contains(query, ignoreCase = true) || it.ip.contains(query)
     }
+
+    val comparator: Comparator<ClientInfo> = when (sort) {
+        ClientSort.Name -> compareBy(String.CASE_INSENSITIVE_ORDER) { it.name }
+        ClientSort.Traffic -> compareBy { it.rx + it.tx }
+        ClientSort.Speed -> compareBy { speeds[it.name] ?: 0L }
+        ClientSort.Activity -> compareBy<ClientInfo> { it.active }.thenBy { it.lastHandshake }
+    }
+    val sorted = filtered.sortedWith(if (ascending) comparator else comparator.reversed())
 
     Column(Modifier.fillMaxSize()) {
         Column(Modifier.padding(start = 16.dp, end = 16.dp, top = 12.dp)) {
@@ -159,6 +193,29 @@ fun ClientsScreen(vm: AppViewModel, server: ServerProfile) {
                     Icon(Icons.Filled.Search, contentDescription = null, tint = PanelMuted)
                 }
             )
+
+            Spacer(Modifier.height(10.dp))
+
+            Row(
+                modifier = Modifier.horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                ClientSort.entries.forEach { option ->
+                    SortChip(
+                        label = option.label,
+                        selected = sort == option,
+                        ascending = ascending,
+                        onClick = {
+                            if (sort == option) {
+                                ascending = !ascending
+                            } else {
+                                sort = option
+                                ascending = option == ClientSort.Name
+                            }
+                        }
+                    )
+                }
+            }
 
             Spacer(Modifier.height(10.dp))
         }
@@ -197,9 +254,10 @@ fun ClientsScreen(vm: AppViewModel, server: ServerProfile) {
                 contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 4.dp, bottom = 24.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
-                items(filtered, key = { it.name }) { client ->
+                items(sorted, key = { it.name }) { client ->
                     ClientRow(
                         client = client,
+                        speed = speeds[client.name] ?: 0L,
                         canEdit = auth.isAdmin,
                         onKey = {
                             keyTarget = client
@@ -394,6 +452,7 @@ fun ClientsScreen(vm: AppViewModel, server: ServerProfile) {
 @Composable
 private fun ClientRow(
     client: ClientInfo,
+    speed: Long,
     canEdit: Boolean,
     onKey: () -> Unit,
     onDownload: () -> Unit,
@@ -498,6 +557,14 @@ private fun ClientRow(
                     style = MaterialTheme.typography.labelSmall,
                     color = PanelMuted
                 )
+                if (speed > 0L) {
+                    Spacer(Modifier.width(12.dp))
+                    Text(
+                        formatSpeed(speed),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = PanelGreen
+                    )
+                }
                 Spacer(Modifier.weight(1f))
                 Text(
                     if (client.lastHandshake > 0) {
@@ -897,5 +964,71 @@ private fun ResultDialog(
                 )
             }
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Сортировка клиентов
+// ---------------------------------------------------------------------------
+
+private enum class ClientSort(val label: String) {
+    Activity("Активность"),
+    Name("Имя"),
+    Traffic("Трафик"),
+    Speed("Скорость")
+}
+
+/** Замер трафика клиента: суммарные байты и время снятия. */
+private data class SpeedSample(val bytes: Long, val at: Long)
+
+/**
+ * Считает скорость по разнице двух замеров `/api/clients`.
+ * Возвращает скорости и новый набор замеров для следующего раза.
+ */
+private fun measureSpeeds(
+    previous: Map<String, SpeedSample>,
+    clients: List<ClientInfo>,
+    now: Long
+): Pair<Map<String, Long>, Map<String, SpeedSample>> {
+    val speeds = HashMap<String, Long>(clients.size)
+    val samples = HashMap<String, SpeedSample>(clients.size)
+    clients.forEach { client ->
+        val bytes = client.rx + client.tx
+        samples[client.name] = SpeedSample(bytes, now)
+        val old = previous[client.name] ?: return@forEach
+        val seconds = (now - old.at) / 1000.0
+        // Счётчики могли сбросить (перезапуск интерфейса) — не показываем минус.
+        speeds[client.name] = if (seconds <= 0.0 || bytes < old.bytes) {
+            0L
+        } else {
+            ((bytes - old.bytes) / seconds).toLong()
+        }
+    }
+    return speeds to samples
+}
+
+@Composable
+private fun SortChip(
+    label: String,
+    selected: Boolean,
+    ascending: Boolean,
+    onClick: () -> Unit
+) {
+    Surface(
+        shape = RoundedCornerShape(50),
+        color = if (selected) PanelAccent.copy(alpha = 0.16f) else PanelSurface,
+        border = BorderStroke(
+            1.dp,
+            if (selected) PanelAccent.copy(alpha = 0.45f) else PanelBorder
+        ),
+        modifier = Modifier.clickable(onClick = onClick)
+    ) {
+        Text(
+            text = if (selected) "$label ${if (ascending) "↑" else "↓"}" else label,
+            style = MaterialTheme.typography.labelSmall,
+            color = if (selected) PanelAccent else PanelMuted,
+            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
+        )
     }
 }

@@ -28,6 +28,7 @@ import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material.icons.filled.Warning
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -78,7 +79,6 @@ import kotlin.math.max
 
 private data class OverviewData(
     val sys: SysInfo,
-    val history: HistoryData,
     val clients: List<ClientInfo>,
     val services: List<ServiceInfo>,
     val security: SecurityStatus,
@@ -96,6 +96,10 @@ fun OverviewScreen(vm: AppViewModel, server: ServerProfile) {
     var range by remember(server.id) { mutableStateOf("1h") }
     var autoTick by remember(server.id) { mutableIntStateOf(0) }
     var restarting by remember { mutableStateOf<Set<String>>(emptySet()) }
+    // История трафика грузится отдельно: переключение периода не должно
+    // перезапрашивать клиентов, службы и статус защиты.
+    var history by remember(server.id) { mutableStateOf<HistoryData?>(null) }
+    var historyLoading by remember(server.id) { mutableStateOf(true) }
     val scope = rememberCoroutineScope()
 
     LaunchedEffect(server.id) {
@@ -111,7 +115,6 @@ fun OverviewScreen(vm: AppViewModel, server: ServerProfile) {
         server.metricsPort,
         server.metricsToken,
         vm.refreshTick,
-        range,
         autoTick
     ) {
         if (data == null) loading = true
@@ -136,7 +139,6 @@ fun OverviewScreen(vm: AppViewModel, server: ServerProfile) {
                     }
                     fromMetrics?.toSysInfo() ?: vm.call(server) { sysinfo() }
                 }
-                val history = async { vm.call(server) { history(range, "global") } }
                 val clients = async { vm.call(server) { clients() } }
                 val services = async { vm.call(server) { services() } }
                 val security = async { vm.call(server) { securityStatus() } }
@@ -144,7 +146,6 @@ fun OverviewScreen(vm: AppViewModel, server: ServerProfile) {
                 val tools = async { runCatching { vm.call(server) { toolsStatus() } }.getOrNull() }
                 OverviewData(
                     sys = sys.await(),
-                    history = history.await(),
                     clients = clients.await(),
                     services = services.await(),
                     security = security.await(),
@@ -160,6 +161,30 @@ fun OverviewScreen(vm: AppViewModel, server: ServerProfile) {
             if (data == null) error = e.message ?: "Не удалось загрузить обзор"
         } finally {
             loading = false
+        }
+    }
+
+    // История трафика живёт отдельно от остального «Обзора»: смена периода
+    // перезапрашивает только график, а не клиентов и службы.
+    LaunchedEffect(
+        server.id,
+        server.apiUrl,
+        server.metricsPort,
+        server.metricsToken,
+        vm.refreshTick,
+        range,
+        autoTick
+    ) {
+        if (history?.range != range) historyLoading = true
+        try {
+            history = vm.call(server) { history(range, "global") }
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            android.util.Log.w("ServpanelOverview", "Не удалось загрузить историю трафика", e)
+            if (history?.range != range) history = HistoryData(range = range)
+        } finally {
+            historyLoading = false
         }
     }
 
@@ -220,10 +245,12 @@ fun OverviewScreen(vm: AppViewModel, server: ServerProfile) {
         }
 
         item {
+            val chart = history?.takeIf { it.range == range }
+            val periodLabel = ranges.firstOrNull { it.first == range }?.second ?: range
             PanelCard {
                 SectionHeader(
                     title = "Трафик",
-                    subtitle = "Суммарно по всем клиентам",
+                    subtitle = "Суммарно по всем клиентам · $periodLabel",
                     trailing = {
                         IconButton(onClick = { vm.refreshWorkspace() }) {
                             Icon(Icons.Filled.Refresh, contentDescription = "Обновить", tint = PanelMuted)
@@ -236,30 +263,33 @@ fun OverviewScreen(vm: AppViewModel, server: ServerProfile) {
                         RangeChip(
                             label = label,
                             selected = range == key,
-                            onClick = { range = key }
+                            onClick = { if (range != key) range = key }
                         )
                     }
                 }
                 Spacer(Modifier.height(14.dp))
-                TrafficChart(current.history)
+                when {
+                    chart == null || historyLoading -> ChartLoading()
+                    else -> TrafficChart(chart)
+                }
                 Spacer(Modifier.height(10.dp))
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     LegendDot(PanelAccent)
                     Text(
-                        "RX ${formatSpeed(current.history.rx.lastOrNull() ?: 0L)}",
+                        "RX ${formatSpeed(chart?.rx?.lastOrNull() ?: 0L)}",
                         style = MaterialTheme.typography.labelSmall,
                         color = PanelMuted
                     )
                     Spacer(Modifier.width(14.dp))
                     LegendDot(PanelViolet)
                     Text(
-                        "TX ${formatSpeed(current.history.tx.lastOrNull() ?: 0L)}",
+                        "TX ${formatSpeed(chart?.tx?.lastOrNull() ?: 0L)}",
                         style = MaterialTheme.typography.labelSmall,
                         color = PanelMuted
                     )
                     Spacer(Modifier.weight(1f))
                     Text(
-                        "пик ${formatSpeed(max(current.history.rx.maxOrNull() ?: 0L, current.history.tx.maxOrNull() ?: 0L))}",
+                        "пик ${formatSpeed(max(chart?.rx?.maxOrNull() ?: 0L, chart?.tx?.maxOrNull() ?: 0L))}",
                         style = MaterialTheme.typography.labelSmall,
                         color = PanelMuted
                     )
@@ -572,6 +602,22 @@ private fun LegendDot(color: Color) {
 }
 
 @Composable
+private fun ChartLoading() {
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(150.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        CircularProgressIndicator(
+            color = PanelAccent,
+            strokeWidth = 2.dp,
+            modifier = Modifier.size(24.dp)
+        )
+    }
+}
+
+@Composable
 private fun TrafficChart(history: HistoryData) {
     val maxValue = max(
         history.rx.maxOrNull() ?: 0L,
@@ -641,7 +687,7 @@ private fun TrafficChart(history: HistoryData) {
                 Icon(Icons.Filled.CloudOff, contentDescription = null, tint = PanelMuted, modifier = Modifier.size(16.dp))
                 Spacer(Modifier.width(8.dp))
                 Text(
-                    "История трафика ещё собирается",
+                    "Нет данных за выбранный период",
                     style = MaterialTheme.typography.labelSmall,
                     color = PanelMuted
                 )

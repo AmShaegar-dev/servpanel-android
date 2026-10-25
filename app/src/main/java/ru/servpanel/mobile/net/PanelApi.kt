@@ -160,14 +160,14 @@ class PanelApi(private val context: Context) {
                 when (response.code) {
                     200 -> return@withContext ProbeResult(
                         ok = true,
-                        resolvedUrl = candidate,
+                        resolvedUrl = baseUrlOf(response.finalUrl) ?: candidate,
                         message = "Панель на связи",
                         latencyMs = latency
                     )
 
                     401 -> return@withContext ProbeResult(
                         ok = true,
-                        resolvedUrl = candidate,
+                        resolvedUrl = baseUrlOf(response.finalUrl) ?: candidate,
                         message = "Панель найдена, потребуется вход",
                         latencyMs = latency,
                         needsLogin = true
@@ -188,7 +188,7 @@ class PanelApi(private val context: Context) {
         Unit
     }
 
-    private data class Response(val code: Int, val body: String)
+    private data class Response(val code: Int, val body: String, val finalUrl: String)
 
     private fun fetch(client: OkHttpClient, url: String): Response {
         val request = Request.Builder()
@@ -197,8 +197,23 @@ class PanelApi(private val context: Context) {
             .header("Accept", "application/json")
             .build()
         client.newCall(request).execute().use { response ->
-            return Response(response.code, response.body?.string().orEmpty())
+            return Response(
+                code = response.code,
+                body = response.body?.string().orEmpty(),
+                finalUrl = response.request.url.toString()
+            )
         }
+    }
+
+    /**
+     * Адрес панели из финального URL после редиректов: отрезает
+     * `/api/security/status`. Так HTTP-редирект на HTTPS сохраняется
+     * в профиль уже как https-адрес.
+     */
+    private fun baseUrlOf(finalUrl: String): String? {
+        val cut = finalUrl.indexOf("/api/")
+        val base = if (cut > 0) finalUrl.substring(0, cut) else finalUrl
+        return PanelUrl.normalize(base)
     }
 
     private fun describe(e: Exception): String = when (e) {

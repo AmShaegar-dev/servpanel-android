@@ -6,8 +6,8 @@ plugins {
 
 // Версия задаётся при сборке: -PappVersionName=1.2.0 -PappVersionCode=3
 // CI подставляет имя тега и номер запуска, локально работают значения по умолчанию.
-val appVersionName = (findProperty("appVersionName") as String?)?.takeIf { it.isNotBlank() } ?: "1.2.0"
-val appVersionCode = (findProperty("appVersionCode") as String?)?.toIntOrNull() ?: 3
+val appVersionName = (findProperty("appVersionName") as String?)?.takeIf { it.isNotBlank() } ?: "1.3.0"
+val appVersionCode = (findProperty("appVersionCode") as String?)?.toIntOrNull() ?: 4
 
 // Репозиторий, на который ссылается экран «Ещё» и откуда качаются обновления.
 val githubRepo = (findProperty("githubRepo") as String?)?.takeIf { it.isNotBlank() }
@@ -99,6 +99,9 @@ dependencies {
     implementation("androidx.compose.material:material-icons-extended")
 
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
+
+    // SSH-установка панели на сервер прямо из приложения.
+    implementation("com.github.mwiede:jsch:0.2.20")
 
     debugImplementation("androidx.compose.ui:ui-tooling")
 }

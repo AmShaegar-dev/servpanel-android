@@ -10,6 +10,7 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import ru.servpanel.mobile.ui.EditorScreen
+import ru.servpanel.mobile.ui.InstallPanelScreen
 import ru.servpanel.mobile.ui.ServersScreen
 import ru.servpanel.mobile.ui.WorkspaceScreen
 
@@ -47,7 +48,17 @@ fun AppRoot(vm: AppViewModel) {
             onDelete = vm::deleteServer,
             onRefreshAll = vm::refreshAll,
             onRefreshOne = vm::refreshOne,
-            onOpenExternal = { openExternal(vm, it) }
+            onOpenExternal = { openExternal(vm, it) },
+            onInstall = vm::openInstall
+        )
+
+        Screen.InstallPanel -> InstallPanelScreen(
+            vm = vm,
+            onBack = vm::closeInstall,
+            onInstalled = { profile ->
+                vm.saveServer(profile)
+                vm.openServer(profile.id)
+            }
         )
 
         is Screen.Workspace -> {
