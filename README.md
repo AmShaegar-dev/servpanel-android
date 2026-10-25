@@ -209,9 +209,38 @@ adb install -r app/build/outputs/apk/debug/app-debug.apk
 
 ### Сборка в GitHub Actions
 
-В проекте есть workflow `.github/workflows/android.yml`: при каждом push
-в `main` он собирает debug-APK и выкладывает его в артефакты сборки.
-Скачать: вкладка **Actions → Build APK → последний запуск → Artifacts**.
+Workflow `.github/workflows/android.yml` собирает **release** APK с постоянной
+подписью (ключ берётся из GitHub Secrets) и публикует его в Releases:
+
+- push в `main` или pull request — сборка, lint и артефакт;
+- тег `v*` (например, `v1.2.1`) — сборка и автоматическая публикация релиза
+  с файлами `servpanel-mobile.apk` и `servpanel-mobile-<версия>.apk`;
+- ручной запуск (`workflow_dispatch`) с галочкой «release».
+
+`versionCode` вычисляется из тега: `v1.2.1` → `10201`. Поэтому обновления
+всегда ставятся поверх предыдущей версии.
+
+Секреты репозитория (`Settings → Secrets and variables → Actions`):
+
+| Секрет | Значение |
+| --- | --- |
+| `SERVPANEL_KEYSTORE_BASE64` | `base64 -w0 servpanel-release.jks` |
+| `SERVPANEL_KEYSTORE_PASSWORD` | пароль хранилища |
+| `SERVPANEL_KEY_ALIAS` | alias ключа (`servpanel`) |
+| `SERVPANEL_KEY_PASSWORD` | пароль ключа |
+
+Если секреты не заданы, APK соберётся с debug-подписью — такие обновления
+не встанут поверх release-версии.
+
+Новый релиз:
+
+```bash
+git tag -a v1.2.2 -m "Servpanel Mobile 1.2.2"
+git push origin v1.2.2
+```
+
+Постоянная ссылка на последний APK:
+`https://github.com/makar19977v-glitch/servpanel-android/releases/latest/download/servpanel-mobile.apk`
 
 ## Первый запуск
 
