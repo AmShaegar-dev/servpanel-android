@@ -43,6 +43,7 @@ enum class MoreScreen(val title: String) {
     Ssl("Домены и SSL"),
     Updates("Обновления"),
     Install("Установка"),
+    Proxy("Прокси"),
     Diagnostics("Диагностика"),
     Services("Службы"),
     Users("Пользователи"),
@@ -83,6 +84,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         private set
 
     var moreScreen by mutableStateOf(MoreScreen.None)
+        private set
+
+    /** Какой модуль открыть в разделе «Установка» (awg, mtproto, mtproxyl…). */
+    var installModule by mutableStateOf("awg")
         private set
 
     var refreshing by mutableStateOf(false)
@@ -138,7 +143,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         moreScreen = MoreScreen.None
     }
 
-    fun openMore(target: MoreScreen) {
+    fun openMore(target: MoreScreen, installModuleKey: String? = null) {
+        if (!installModuleKey.isNullOrBlank()) installModule = installModuleKey
         moreScreen = target
     }
 

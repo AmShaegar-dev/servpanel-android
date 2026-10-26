@@ -36,6 +36,10 @@ import ru.servpanel.mobile.data.ObfApplyResult
 import ru.servpanel.mobile.data.ObfCurrent
 import ru.servpanel.mobile.data.ObfGenerated
 import ru.servpanel.mobile.data.ObfProfiles
+import ru.servpanel.mobile.data.ProxyBotStatus
+import ru.servpanel.mobile.data.ProxyStatus
+import ru.servpanel.mobile.data.ProxyUser
+import ru.servpanel.mobile.data.ProxyUserLinks
 import ru.servpanel.mobile.data.SecurityStatus
 import ru.servpanel.mobile.data.ServerInfo
 import ru.servpanel.mobile.data.ServerProfile
@@ -675,6 +679,74 @@ class PanelClient(
     suspend fun uninstallAwg() {
         json("POST", "/api/uninstall/awg", timeoutSeconds = 60)
     }
+
+    // ------------------------------------------------------------------
+    // MTProto-прокси: MTProxyL / Telemt (панель 2.8+)
+    // ------------------------------------------------------------------
+
+    suspend fun proxyStatus(): ProxyStatus =
+        ProxyStatus.from(json("GET", "/api/proxy/status", timeoutSeconds = 30))
+
+    suspend fun proxyUsers(): List<ProxyUser> {
+        val result = json("GET", "/api/proxy/users", timeoutSeconds = 30)
+        return result.optJSONArray("users")?.objects()?.map(ProxyUser::from) ?: emptyList()
+    }
+
+    suspend fun createProxyUser(body: JSONObject) {
+        json("POST", "/api/proxy/users", body = body, timeoutSeconds = 60)
+    }
+
+    suspend fun patchProxyUser(username: String, body: JSONObject) {
+        json("PATCH", "/api/proxy/users/$username", body = body, timeoutSeconds = 60)
+    }
+
+    suspend fun deleteProxyUser(username: String) {
+        json("DELETE", "/api/proxy/users/$username", timeoutSeconds = 60)
+    }
+
+    /** enable, disable, rotate-secret, reset-quota или reset-traffic. */
+    suspend fun proxyUserAction(username: String, action: String, secret: String? = null) {
+        val body = if (secret.isNullOrBlank()) null else JSONObject().put("secret", secret.trim())
+        json("POST", "/api/proxy/users/$username/$action", body = body, timeoutSeconds = 60)
+    }
+
+    suspend fun proxyUserLinks(username: String): ProxyUserLinks =
+        ProxyUserLinks.from(json("GET", "/api/proxy/users/$username/links", timeoutSeconds = 30))
+
+    suspend fun restartProxy() {
+        json("POST", "/api/proxy/restart", timeoutSeconds = 90)
+    }
+
+    /** Выдать новый ключ API MTProxyL и сохранить его в панели. */
+    suspend fun rotateProxyApiKey() {
+        json("POST", "/api/proxy/api-key", timeoutSeconds = 120)
+    }
+
+    suspend fun proxyBot(): ProxyBotStatus =
+        ProxyBotStatus.from(json("GET", "/api/proxy/bot", timeoutSeconds = 30))
+
+    suspend fun saveProxyBot(
+        enabled: Boolean,
+        token: String?,
+        admins: List<String>,
+        clearToken: Boolean = false
+    ): ProxyBotStatus {
+        val body = JSONObject()
+            .put("enabled", enabled)
+            .put("admins", JSONArray(admins))
+        if (token != null) body.put("token", token)
+        if (clearToken) body.put("clearToken", true)
+        return ProxyBotStatus.from(json("POST", "/api/proxy/bot", body = body, timeoutSeconds = 60))
+    }
+
+    suspend fun testProxyBot() {
+        json("POST", "/api/proxy/bot/test", timeoutSeconds = 60)
+    }
+
+    /** Ссылки `tg://`, сохранённые установщиком MEKO. */
+    suspend fun mtprotoLinks(): List<String> =
+        json("GET", "/api/mtproto/links", timeoutSeconds = 30)
+            .optJSONArray("links")?.stringList() ?: emptyList()
 
     // ------------------------------------------------------------------
     // Диагностика

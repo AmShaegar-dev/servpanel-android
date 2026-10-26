@@ -22,6 +22,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.DeleteForever
 import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.Link
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.AlertDialog
@@ -70,7 +71,8 @@ private data class ModuleInfo(val key: String, val title: String, val subtitle: 
 private val modules = listOf(
     ModuleInfo("awg", "AmneziaWG", "VPN-сервер: установка и настройка"),
     ModuleInfo("adguard", "AdGuard Home", "DNS-фильтр и блокировка рекламы"),
-    ModuleInfo("mtproto", "MTProto", "Telegram-прокси"),
+    ModuleInfo("mtproto", "MTProto (MEKO)", "Telemt, MTProto.zig или только фикс"),
+    ModuleInfo("mtproxyl", "MTProxyL", "Пользователи, лимиты и Telegram-бот"),
     ModuleInfo("warp", "Cloudflare WARP", "WARP + Xray для AdGuard")
 )
 
@@ -89,7 +91,28 @@ fun InstallScreen(vm: AppViewModel, server: ServerProfile) {
     var messageOk by remember { mutableStateOf(false) }
     var busy by remember { mutableStateOf(false) }
     var confirmUninstall by remember { mutableStateOf(false) }
-    var selected by remember { mutableStateOf("awg") }
+    var selected by remember(server.id, vm.installModule) { mutableStateOf(vm.installModule) }
+
+    var showMtLinks by remember { mutableStateOf(false) }
+    var mtLinks by remember { mutableStateOf<List<String>?>(null) }
+    var mtLinksLoading by remember { mutableStateOf(false) }
+    var mtLinksError by remember { mutableStateOf<String?>(null) }
+
+    fun loadMtLinks() {
+        showMtLinks = true
+        if (mtLinks != null) return
+        mtLinksLoading = true
+        mtLinksError = null
+        scope.launch {
+            try {
+                mtLinks = vm.call(server) { mtprotoLinks() }
+            } catch (e: Exception) {
+                mtLinksError = e.message ?: "Не удалось прочитать ссылки"
+            } finally {
+                mtLinksLoading = false
+            }
+        }
+    }
 
     LaunchedEffect(server.id, vm.refreshTick, reload) {
         if (state == null) loading = true
@@ -336,6 +359,28 @@ fun InstallScreen(vm: AppViewModel, server: ServerProfile) {
             )
         }
 
+        if (selected == "mtproto" || selected == "mtproxyl") {
+            item {
+                PanelCard {
+                    SectionHeader("Ссылки для подключения", "tg:// из /root/mtproto_links.txt")
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        "После установки панель сохраняет ссылки Telemt/MTProxyL. " +
+                            "Их можно открыть в Telegram или отправить клиенту.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = PanelMuted
+                    )
+                    Spacer(Modifier.height(10.dp))
+                    PanelOutlinedButton(
+                        text = "Показать ссылки",
+                        onClick = { loadMtLinks() },
+                        modifier = Modifier.fillMaxWidth(),
+                        icon = Icons.Filled.Link
+                    )
+                }
+            }
+        }
+
         if (auth.isAdmin) {
             item {
                 PanelCard {
@@ -417,6 +462,19 @@ fun InstallScreen(vm: AppViewModel, server: ServerProfile) {
             }
         )
     }
+
+    if (showMtLinks) {
+        MtProtoLinksDialog(
+            links = mtLinks,
+            loading = mtLinksLoading,
+            error = mtLinksError,
+            onReload = {
+                mtLinks = null
+                loadMtLinks()
+            },
+            onDismiss = { showMtLinks = false }
+        )
+    }
 }
 
 @Composable
@@ -426,9 +484,88 @@ private fun InstallOptionsCard(
     enabled: Boolean,
     onInstall: (Map<String, Any>) -> Unit
 ) {
+    PanelCard {
+        SectionHeader(
+            title = "Параметры",
+            subtitle = when (module) {
+                "awg" -> "Версия, маршрутизация и режим установки"
+                "mtproto" -> "Мастер MEKO: Telemt, MTProto.zig или фикс"
+                "mtproxyl" -> "Мастер MTProxyL: движок, WEB, API и бот"
+                "warp" -> "Адреса и порты WARP/Xray"
+                else -> "Домен и общие параметры"
+            }
+        )
+
+        Spacer(Modifier.height(12.dp))
+
+        when (module) {
+            "awg" -> AwgInstallOptions(running, enabled, onInstall)
+            "mtproto" -> MtprotoInstallOptions(running, enabled, onInstall)
+            "mtproxyl" -> MtproxylInstallOptions(running, enabled, onInstall)
+            "warp" -> WarpInstallOptions(running, enabled, onInstall)
+            else -> AdGuardInstallOptions(running, enabled, onInstall)
+        }
+
+        if (!enabled) {
+            Spacer(Modifier.height(8.dp))
+            Text(
+                "Роль «только просмотр»: установка недоступна.",
+                style = MaterialTheme.typography.labelSmall,
+                color = PanelMuted
+            )
+        }
+    }
+}
+
+@Composable
+private fun InstallButton(enabled: Boolean, running: Boolean, onClick: () -> Unit) {
+    Spacer(Modifier.height(16.dp))
+    PanelButton(
+        text = "Установить",
+        onClick = onClick,
+        modifier = Modifier.fillMaxWidth(),
+        enabled = enabled && !running,
+        icon = Icons.Filled.Download
+    )
+}
+
+@Composable
+private fun AdGuardInstallOptions(
+    running: Boolean,
+    enabled: Boolean,
+    onInstall: (Map<String, Any>) -> Unit
+) {
     var domain by remember { mutableStateOf("") }
-    var version by remember { mutableStateOf("2.0") }
-    var preset by remember { mutableStateOf("default") }
+
+    PanelTextField(
+        value = domain,
+        onValueChange = { domain = it.trim() },
+        label = "Домен (необязательно)",
+        placeholder = "dns.example.com",
+        enabled = !running
+    )
+    Spacer(Modifier.height(8.dp))
+    Text(
+        "AdGuard Home ставится в неинтерактивном режиме: панель откроет DNS-порты " +
+            "и покажет адрес веб-интерфейса после установки.",
+        style = MaterialTheme.typography.bodySmall,
+        color = PanelMuted
+    )
+    InstallButton(enabled, running) {
+        val options = mutableMapOf<String, Any>()
+        if (domain.isNotBlank()) options["domain"] = domain
+        onInstall(options)
+    }
+}
+
+@Composable
+private fun AwgInstallOptions(
+    running: Boolean,
+    enabled: Boolean,
+    onInstall: (Map<String, Any>) -> Unit
+) {
+    var domain by remember { mutableStateOf("") }
+    var version by remember { mutableStateOf("3.1") }
     var route by remember { mutableStateOf("all") }
     var customRoute by remember { mutableStateOf("") }
     var ipv6 by remember { mutableStateOf("disallow") }
@@ -441,217 +578,687 @@ private fun InstallOptionsCard(
     var remoteIp by remember { mutableStateOf("") }
     var remotePort by remember { mutableStateOf("22") }
     var remotePass by remember { mutableStateOf("") }
-    var listenIp by remember { mutableStateOf("10.8.1.1") }
-    var listenPort by remember { mutableStateOf("443") }
-    var socksPort by remember { mutableStateOf("40000") }
 
-    PanelCard {
-        SectionHeader(
-            title = "Параметры",
-            subtitle = when (module) {
-                "awg" -> "Версия, маршрутизация и режим установки"
-                "warp" -> "Адреса и порты WARP/Xray"
-                else -> "Домен и общие параметры"
-            }
+    PanelTextField(
+        value = domain,
+        onValueChange = { domain = it.trim() },
+        label = "Домен (необязательно)",
+        placeholder = "vpn.example.com",
+        enabled = !running
+    )
+    Spacer(Modifier.height(10.dp))
+
+    PanelDropdown(
+        label = "Версия AmneziaWG",
+        options = listOf("1.5", "2.0", "3.1"),
+        selected = version,
+        onSelect = { version = it }
+    )
+    Spacer(Modifier.height(10.dp))
+
+    PanelDropdown(
+        label = "Маршрутизация",
+        options = listOf("all", "amnezia", "custom"),
+        selected = route,
+        onSelect = { route = it }
+    )
+    if (route == "custom") {
+        Spacer(Modifier.height(10.dp))
+        PanelTextField(
+            value = customRoute,
+            onValueChange = { customRoute = it },
+            label = "Свои подсети",
+            placeholder = "10.0.0.0/8, 192.168.0.0/16",
+            enabled = !running
         )
+    }
+    Spacer(Modifier.height(10.dp))
 
-        Spacer(Modifier.height(12.dp))
+    PanelDropdown(
+        label = "IPv6",
+        options = listOf("disallow", "allow", "tunnel"),
+        selected = ipv6,
+        onSelect = { ipv6 = it }
+    )
+    Spacer(Modifier.height(10.dp))
 
-        if (module != "warp") {
+    PanelTextField(
+        value = port,
+        onValueChange = { port = it.filter(Char::isDigit).take(5) },
+        label = "Порт (необязательно)",
+        placeholder = "443",
+        keyboardType = KeyboardType.Number,
+        enabled = !running
+    )
+    Spacer(Modifier.height(4.dp))
+
+    ToggleRow(
+        title = "Изоляция клиентов",
+        subtitle = "Клиенты не видят друг друга",
+        checked = isolation,
+        onCheckedChange = { isolation = it },
+        enabled = !running
+    )
+    ToggleRow(
+        title = "Оставить пакеты",
+        subtitle = "Не удалять зависимости после установки",
+        checked = keepPackages,
+        onCheckedChange = { keepPackages = it },
+        enabled = !running
+    )
+    ToggleRow(
+        title = "Без твиков",
+        subtitle = "Не менять системные параметры",
+        checked = noTweaks,
+        onCheckedChange = { noTweaks = it },
+        enabled = !running
+    )
+    Spacer(Modifier.height(10.dp))
+
+    PanelDropdown(
+        label = "Режим установки",
+        options = listOf("single", "cascade"),
+        selected = awgMode,
+        onSelect = { awgMode = it }
+    )
+    if (awgMode == "cascade") {
+        Spacer(Modifier.height(10.dp))
+        PanelDropdown(
+            label = "Роль сервера",
+            options = listOf("ru", "eu"),
+            selected = cascadeRole,
+            onSelect = { cascadeRole = it }
+        )
+        if (cascadeRole == "ru") {
+            Spacer(Modifier.height(10.dp))
             PanelTextField(
-                value = domain,
-                onValueChange = { domain = it.trim() },
-                label = "Домен (необязательно)",
-                placeholder = "vpn.example.com",
+                value = remoteIp,
+                onValueChange = { remoteIp = it.trim() },
+                label = "IP EU-сервера",
+                placeholder = "203.0.113.10",
                 enabled = !running
             )
             Spacer(Modifier.height(10.dp))
-        }
-
-        if (module == "awg") {
-            PanelDropdown(
-                label = "Версия AmneziaWG",
-                options = listOf("1.5", "2.0", "3.1"),
-                selected = version,
-                onSelect = { version = it }
-            )
-            Spacer(Modifier.height(10.dp))
-            PanelDropdown(
-                label = "Пресет",
-                options = listOf("default", "mobile"),
-                selected = preset,
-                onSelect = { preset = it }
-            )
-            Spacer(Modifier.height(10.dp))
-            PanelDropdown(
-                label = "Маршрутизация",
-                options = listOf("all", "amnezia", "custom"),
-                selected = route,
-                onSelect = { route = it }
-            )
-            if (route == "custom") {
-                Spacer(Modifier.height(10.dp))
-                PanelTextField(
-                    value = customRoute,
-                    onValueChange = { customRoute = it },
-                    label = "Свои подсети",
-                    placeholder = "10.0.0.0/8, 192.168.0.0/16",
-                    enabled = !running
-                )
-            }
-            Spacer(Modifier.height(10.dp))
-            PanelDropdown(
-                label = "IPv6",
-                options = listOf("disallow", "allow", "tunnel"),
-                selected = ipv6,
-                onSelect = { ipv6 = it }
+            PanelTextField(
+                value = remotePort,
+                onValueChange = { remotePort = it.filter(Char::isDigit).take(5) },
+                label = "SSH-порт",
+                keyboardType = KeyboardType.Number,
+                enabled = !running
             )
             Spacer(Modifier.height(10.dp))
             PanelTextField(
-                value = port,
-                onValueChange = { port = it.filter(Char::isDigit).take(5) },
-                label = "Порт (необязательно)",
-                placeholder = "51820",
-                keyboardType = KeyboardType.Number,
+                value = remotePass,
+                onValueChange = { remotePass = it },
+                label = "Пароль SSH",
+                visualTransformation = PasswordVisualTransformation(),
+                enabled = !running
+            )
+        }
+    }
+
+    Spacer(Modifier.height(8.dp))
+    Text(
+        "AWG ставится стандартно: весь трафик, IPv6 disallow, порт 443. " +
+            "Пресетов default/mobile больше нет — параметры обфускации задаются " +
+            "во вкладке «Обфускация» или в Архитекторе.",
+        style = MaterialTheme.typography.bodySmall,
+        color = PanelMuted
+    )
+
+    InstallButton(enabled, running) {
+        val options = mutableMapOf<String, Any>()
+        if (domain.isNotBlank()) options["domain"] = domain
+        options["version"] = version
+        options["route"] = route
+        if (route == "custom" && customRoute.isNotBlank()) options["customRoute"] = customRoute
+        options["ipv6"] = ipv6
+        if (port.isNotBlank()) options["port"] = port.toIntOrNull() ?: 0
+        options["isolation"] = isolation
+        options["keepPackages"] = keepPackages
+        options["noTweaks"] = noTweaks
+        options["awgMode"] = awgMode
+        options["cascadeRole"] = cascadeRole
+        if (awgMode == "cascade" && cascadeRole == "ru") {
+            if (remoteIp.isNotBlank()) options["remoteIp"] = remoteIp
+            if (remotePort.isNotBlank()) options["remotePort"] = remotePort.toIntOrNull() ?: 22
+            if (remotePass.isNotBlank()) options["remotePass"] = remotePass
+        }
+        onInstall(options)
+    }
+}
+
+@Composable
+private fun MtprotoInstallOptions(
+    running: Boolean,
+    enabled: Boolean,
+    onInstall: (Map<String, Any>) -> Unit
+) {
+    var kind by remember { mutableStateOf("telemt") }
+    var sni by remember { mutableStateOf("ozon.ru") }
+    var port by remember { mutableStateOf("443") }
+    var telemtVersion by remember { mutableStateOf("") }
+    var fixType by remember { mutableStateOf("v3") }
+    var fixPort by remember { mutableStateOf("") }
+    var noFix by remember { mutableStateOf(false) }
+    var adTag by remember { mutableStateOf("") }
+    var mtUser by remember { mutableStateOf("") }
+    var mtUserSecret by remember { mutableStateOf("") }
+    var publicHost by remember { mutableStateOf("") }
+    var web by remember { mutableStateOf(false) }
+    var webHost by remember { mutableStateOf("") }
+    var nginx by remember { mutableStateOf(true) }
+
+    PanelDropdown(
+        label = "Что установить",
+        options = listOf("Telemt", "MTProto.zig", "Только фикс MEKO"),
+        selected = when (kind) {
+            "zig" -> "MTProto.zig"
+            "fix" -> "Только фикс MEKO"
+            else -> "Telemt"
+        },
+        onSelect = {
+            kind = when (it) {
+                "MTProto.zig" -> "zig"
+                "Только фикс MEKO" -> "fix"
+                else -> "telemt"
+            }
+            if (kind != "telemt") web = false
+        }
+    )
+    Spacer(Modifier.height(10.dp))
+
+    PanelTextField(
+        value = sni,
+        onValueChange = { sni = it.trim() },
+        label = "SNI-домен",
+        placeholder = "ozon.ru",
+        enabled = !running
+    )
+    Spacer(Modifier.height(10.dp))
+
+    PanelTextField(
+        value = port,
+        onValueChange = { port = it.filter(Char::isDigit).take(5) },
+        label = "Порт прокси",
+        keyboardType = KeyboardType.Number,
+        enabled = !running
+    )
+    Spacer(Modifier.height(10.dp))
+
+    if (kind == "telemt") {
+        PanelTextField(
+            value = telemtVersion,
+            onValueChange = { telemtVersion = it.trim() },
+            label = "Версия Telemt (необязательно)",
+            placeholder = "последняя",
+            enabled = !running
+        )
+        Spacer(Modifier.height(10.dp))
+    }
+
+    PanelDropdown(
+        label = "Тип фикса MEKO",
+        options = listOf("v2", "v3", "v4", "nft"),
+        selected = fixType,
+        onSelect = { fixType = it }
+    )
+    Spacer(Modifier.height(10.dp))
+
+    PanelTextField(
+        value = fixPort,
+        onValueChange = { fixPort = it.filter(Char::isDigit).take(5) },
+        label = "Порт фикса (необязательно)",
+        placeholder = "как у прокси",
+        keyboardType = KeyboardType.Number,
+        enabled = !running
+    )
+    Spacer(Modifier.height(4.dp))
+
+    ToggleRow(
+        title = "Без фикса",
+        subtitle = "Установить только прокси, без MEKO-фикса",
+        checked = noFix,
+        onCheckedChange = { noFix = it },
+        enabled = !running
+    )
+
+    PanelTextField(
+        value = adTag,
+        onValueChange = { adTag = it.trim() },
+        label = "ad_tag (необязательно)",
+        supportingText = "32 hex-символа",
+        enabled = !running
+    )
+    Spacer(Modifier.height(10.dp))
+
+    PanelTextField(
+        value = mtUser,
+        onValueChange = { mtUser = it.trim() },
+        label = "Первый пользователь (необязательно)",
+        placeholder = "user",
+        supportingText = "Буквы, цифры, _ и -",
+        enabled = !running
+    )
+    Spacer(Modifier.height(10.dp))
+
+    PanelTextField(
+        value = mtUserSecret,
+        onValueChange = { mtUserSecret = it.trim() },
+        label = "Секрет пользователя (необязательно)",
+        supportingText = "32 hex-символа; пусто — сгенерировать",
+        enabled = !running
+    )
+    Spacer(Modifier.height(10.dp))
+
+    PanelTextField(
+        value = publicHost,
+        onValueChange = { publicHost = it.trim() },
+        label = "public_host (необязательно)",
+        placeholder = "proxy.example.com",
+        enabled = !running
+    )
+    Spacer(Modifier.height(4.dp))
+
+    if (kind == "telemt") {
+        ToggleRow(
+            title = "WEB-режим",
+            subtitle = "Nginx + сертификат Let's Encrypt, маскировка под сайт",
+            checked = web,
+            onCheckedChange = { web = it },
+            enabled = !running
+        )
+        if (web) {
+            PanelTextField(
+                value = webHost,
+                onValueChange = { webHost = it.trim() },
+                label = "Домен WEB-режима",
+                placeholder = "web.example.com",
                 enabled = !running
             )
             Spacer(Modifier.height(4.dp))
             ToggleRow(
-                title = "Изоляция клиентов",
-                subtitle = "Клиенты не видят друг друга",
-                checked = isolation,
-                onCheckedChange = { isolation = it },
+                title = "Поставить Nginx и Certbot",
+                subtitle = "Панель сама выпустит сертификат",
+                checked = nginx,
+                onCheckedChange = { nginx = it },
                 enabled = !running
             )
-            ToggleRow(
-                title = "Оставить пакеты",
-                subtitle = "Не удалять зависимости после установки",
-                checked = keepPackages,
-                onCheckedChange = { keepPackages = it },
-                enabled = !running
-            )
-            ToggleRow(
-                title = "Без твиков",
-                subtitle = "Не менять системные параметры",
-                checked = noTweaks,
-                onCheckedChange = { noTweaks = it },
-                enabled = !running
-            )
-            Spacer(Modifier.height(10.dp))
-            PanelDropdown(
-                label = "Режим установки",
-                options = listOf("single", "cascade"),
-                selected = awgMode,
-                onSelect = { awgMode = it }
-            )
-            if (awgMode == "cascade") {
-                Spacer(Modifier.height(10.dp))
-                PanelDropdown(
-                    label = "Роль сервера",
-                    options = listOf("ru", "eu"),
-                    selected = cascadeRole,
-                    onSelect = { cascadeRole = it }
-                )
-                if (cascadeRole == "ru") {
-                    Spacer(Modifier.height(10.dp))
-                    PanelTextField(
-                        value = remoteIp,
-                        onValueChange = { remoteIp = it.trim() },
-                        label = "IP EU-сервера",
-                        placeholder = "203.0.113.10",
-                        enabled = !running
-                    )
-                    Spacer(Modifier.height(10.dp))
-                    PanelTextField(
-                        value = remotePort,
-                        onValueChange = { remotePort = it.filter(Char::isDigit).take(5) },
-                        label = "SSH-порт",
-                        keyboardType = KeyboardType.Number,
-                        enabled = !running
-                    )
-                    Spacer(Modifier.height(10.dp))
-                    PanelTextField(
-                        value = remotePass,
-                        onValueChange = { remotePass = it },
-                        label = "Пароль SSH",
-                        visualTransformation = PasswordVisualTransformation(),
-                        enabled = !running
-                    )
-                }
+        }
+    }
+
+    Spacer(Modifier.height(8.dp))
+    Text(
+        "MTG в мастере недоступен: MEKO пока не ставит его автоматически. " +
+            "Ссылки tg:// после установки появятся в /root/mtproto_links.txt.",
+        style = MaterialTheme.typography.bodySmall,
+        color = PanelMuted
+    )
+
+    InstallButton(enabled, running) {
+        val options = mutableMapOf<String, Any>()
+        options["kind"] = kind
+        options["mtDomain"] = sni
+        options["mtPort"] = port.toIntOrNull() ?: 443
+        if (telemtVersion.isNotBlank()) options["mtVersion"] = telemtVersion
+        options["fixType"] = fixType
+        if (fixPort.isNotBlank()) options["fixPort"] = fixPort.toIntOrNull() ?: 0
+        options["noFix"] = noFix
+        if (adTag.isNotBlank()) options["adTag"] = adTag
+        if (mtUser.isNotBlank()) options["mtUser"] = mtUser
+        if (mtUserSecret.isNotBlank()) options["mtUserSecret"] = mtUserSecret
+        if (publicHost.isNotBlank()) options["publicHost"] = publicHost
+        options["web"] = web
+        if (web) {
+            options["webHost"] = webHost
+            options["nginx"] = nginx
+        }
+        onInstall(options)
+    }
+}
+
+@Composable
+private fun MtproxylInstallOptions(
+    running: Boolean,
+    enabled: Boolean,
+    onInstall: (Map<String, Any>) -> Unit
+) {
+    var mode by remember { mutableStateOf("manager") }
+    var engine by remember { mutableStateOf("binary") }
+    var proxyMode by remember { mutableStateOf("mtproto") }
+    var port by remember { mutableStateOf("443") }
+    var sni by remember { mutableStateOf("autoscout24.ru") }
+    var host by remember { mutableStateOf("") }
+    var secret by remember { mutableStateOf("") }
+    var adTag by remember { mutableStateOf("") }
+    var user by remember { mutableStateOf("") }
+    var userSecret by remember { mutableStateOf("") }
+    var zapret2 by remember { mutableStateOf(true) }
+    var synLimiter by remember { mutableStateOf("meko") }
+    var meko by remember { mutableStateOf(true) }
+    var selfmask by remember { mutableStateOf("") }
+    var selfmaskCert by remember { mutableStateOf("letsencrypt") }
+    var selfmaskEmail by remember { mutableStateOf("") }
+    var web by remember { mutableStateOf(false) }
+    var webDomain by remember { mutableStateOf("") }
+    var webCarrier by remember { mutableStateOf("https") }
+    var api by remember { mutableStateOf(true) }
+    var apiListen by remember { mutableStateOf("127.0.0.1:9190") }
+    var tgbotToken by remember { mutableStateOf("") }
+    var tgbotAdmin by remember { mutableStateOf("") }
+    var force by remember { mutableStateOf(false) }
+
+    PanelDropdown(
+        label = "Режим MTProxyL",
+        options = listOf("Manager", "Reanimator"),
+        selected = if (mode == "reanimator") "Reanimator" else "Manager",
+        onSelect = { mode = if (it == "Reanimator") "reanimator" else "manager" }
+    )
+    Spacer(Modifier.height(10.dp))
+
+    PanelDropdown(
+        label = "Движок",
+        options = listOf("Binary", "Docker"),
+        selected = if (engine == "docker") "Docker" else "Binary",
+        onSelect = { engine = if (it == "Docker") "docker" else "binary" }
+    )
+    Spacer(Modifier.height(10.dp))
+
+    PanelDropdown(
+        label = "Режим прокси",
+        options = listOf("MTProto", "WEB", "Combined"),
+        selected = when (proxyMode) {
+            "web" -> "WEB"
+            "combined" -> "Combined"
+            else -> "MTProto"
+        },
+        onSelect = {
+            proxyMode = when (it) {
+                "WEB" -> "web"
+                "Combined" -> "combined"
+                else -> "mtproto"
             }
         }
+    )
+    Spacer(Modifier.height(10.dp))
 
-        if (module == "warp") {
-            PanelTextField(
-                value = listenIp,
-                onValueChange = { listenIp = it.trim() },
-                label = "IP туннеля",
-                placeholder = "10.8.1.1",
-                enabled = !running
-            )
-            Spacer(Modifier.height(10.dp))
-            PanelTextField(
-                value = listenPort,
-                onValueChange = { listenPort = it.filter(Char::isDigit).take(5) },
-                label = "Порт Xray",
-                keyboardType = KeyboardType.Number,
-                enabled = !running
-            )
-            Spacer(Modifier.height(10.dp))
-            PanelTextField(
-                value = socksPort,
-                onValueChange = { socksPort = it.filter(Char::isDigit).take(5) },
-                label = "SOCKS-порт",
-                keyboardType = KeyboardType.Number,
-                enabled = !running
-            )
-        }
-
-        Spacer(Modifier.height(16.dp))
-
-        PanelButton(
-            text = "Установить",
-            onClick = {
-                val options = mutableMapOf<String, Any>()
-                if (domain.isNotBlank()) options["domain"] = domain
-                if (module == "awg") {
-                    options["version"] = version
-                    options["preset"] = preset
-                    options["route"] = route
-                    if (route == "custom" && customRoute.isNotBlank()) options["customRoute"] = customRoute
-                    options["ipv6"] = ipv6
-                    if (port.isNotBlank()) options["port"] = port.toIntOrNull() ?: 0
-                    options["isolation"] = isolation
-                    options["keepPackages"] = keepPackages
-                    options["noTweaks"] = noTweaks
-                    options["awgMode"] = awgMode
-                    options["cascadeRole"] = cascadeRole
-                    if (awgMode == "cascade" && cascadeRole == "ru") {
-                        if (remoteIp.isNotBlank()) options["remoteIp"] = remoteIp
-                        if (remotePort.isNotBlank()) options["remotePort"] = remotePort.toIntOrNull() ?: 22
-                        if (remotePass.isNotBlank()) options["remotePass"] = remotePass
-                    }
-                }
-                if (module == "warp") {
-                    options["listenIp"] = listenIp
-                    options["listenPort"] = listenPort.toIntOrNull() ?: 443
-                    options["socksPort"] = socksPort.toIntOrNull() ?: 40000
-                }
-                onInstall(options)
-            },
-            modifier = Modifier.fillMaxWidth(),
-            enabled = enabled && !running,
-            loading = false,
-            icon = Icons.Filled.Download
+    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+        PanelTextField(
+            value = port,
+            onValueChange = { port = it.filter(Char::isDigit).take(5) },
+            label = "Порт",
+            keyboardType = KeyboardType.Number,
+            enabled = !running,
+            modifier = Modifier.weight(1f)
         )
+        PanelTextField(
+            value = sni,
+            onValueChange = { sni = it.trim() },
+            label = "SNI-домен",
+            enabled = !running,
+            modifier = Modifier.weight(1f)
+        )
+    }
+    Spacer(Modifier.height(10.dp))
 
-        if (!enabled) {
-            Spacer(Modifier.height(8.dp))
-            Text(
-                "Роль «только просмотр»: установка недоступна.",
-                style = MaterialTheme.typography.labelSmall,
-                color = PanelMuted
+    PanelTextField(
+        value = host,
+        onValueChange = { host = it.trim() },
+        label = "Публичный адрес (необязательно)",
+        placeholder = "proxy.example.com",
+        enabled = !running
+    )
+    Spacer(Modifier.height(10.dp))
+
+    PanelTextField(
+        value = secret,
+        onValueChange = { secret = it.trim() },
+        label = "Секрет прокси (необязательно)",
+        supportingText = "32 hex-символа; пусто — сгенерировать",
+        enabled = !running
+    )
+    Spacer(Modifier.height(10.dp))
+
+    PanelTextField(
+        value = adTag,
+        onValueChange = { adTag = it.trim() },
+        label = "ad_tag (необязательно)",
+        supportingText = "32 hex-символа",
+        enabled = !running
+    )
+    Spacer(Modifier.height(10.dp))
+
+    PanelTextField(
+        value = user,
+        onValueChange = { user = it.trim() },
+        label = "Первый пользователь (необязательно)",
+        placeholder = "user",
+        enabled = !running
+    )
+    Spacer(Modifier.height(10.dp))
+
+    PanelTextField(
+        value = userSecret,
+        onValueChange = { userSecret = it.trim() },
+        label = "Секрет пользователя (необязательно)",
+        supportingText = "32 hex-символа",
+        enabled = !running
+    )
+    Spacer(Modifier.height(4.dp))
+
+    ToggleRow(
+        title = "Zapret2",
+        subtitle = "Обход блокировок на уровне сети",
+        checked = zapret2,
+        onCheckedChange = { zapret2 = it },
+        enabled = !running
+    )
+    ToggleRow(
+        title = "Фикс MEKO",
+        subtitle = "Установить MEKO-фикс вместе с MTProxyL",
+        checked = meko,
+        onCheckedChange = { meko = it },
+        enabled = !running
+    )
+    Spacer(Modifier.height(10.dp))
+
+    PanelDropdown(
+        label = "NFT SYN limiter",
+        options = listOf("MEKO", "Classic", "Off"),
+        selected = when (synLimiter) {
+            "classic" -> "Classic"
+            "off" -> "Off"
+            else -> "MEKO"
+        },
+        onSelect = {
+            synLimiter = when (it) {
+                "Classic" -> "classic"
+                "Off" -> "off"
+                else -> "meko"
+            }
+        }
+    )
+    Spacer(Modifier.height(10.dp))
+
+    PanelTextField(
+        value = selfmask,
+        onValueChange = { selfmask = it.trim() },
+        label = "Домен Selfmask (необязательно)",
+        placeholder = "mask.example.com",
+        enabled = !running
+    )
+    if (selfmask.isNotBlank()) {
+        Spacer(Modifier.height(10.dp))
+        PanelDropdown(
+            label = "Сертификат Selfmask",
+            options = listOf("Let's Encrypt", "Самоподписанный"),
+            selected = if (selfmaskCert == "selfsigned") "Самоподписанный" else "Let's Encrypt",
+            onSelect = { selfmaskCert = if (it == "Самоподписанный") "selfsigned" else "letsencrypt" }
+        )
+        if (selfmaskCert == "letsencrypt") {
+            Spacer(Modifier.height(10.dp))
+            PanelTextField(
+                value = selfmaskEmail,
+                onValueChange = { selfmaskEmail = it.trim() },
+                label = "E-mail для Let's Encrypt",
+                placeholder = "admin@example.com",
+                enabled = !running
             )
         }
+    }
+    Spacer(Modifier.height(4.dp))
+
+    ToggleRow(
+        title = "WEB Proxy",
+        subtitle = "Домен и carrier для маскировки",
+        checked = web,
+        onCheckedChange = { web = it },
+        enabled = !running
+    )
+    if (web) {
+        PanelTextField(
+            value = webDomain,
+            onValueChange = { webDomain = it.trim() },
+            label = "Домен WEB Proxy",
+            placeholder = "web.example.com",
+            enabled = !running
+        )
+        Spacer(Modifier.height(10.dp))
+        PanelDropdown(
+            label = "Carrier",
+            options = listOf("https", "https-lanes", "websocket", "websocket-lanes"),
+            selected = webCarrier,
+            onSelect = { webCarrier = it }
+        )
+    }
+    Spacer(Modifier.height(4.dp))
+
+    ToggleRow(
+        title = "API панели",
+        subtitle = "Нужен для управления пользователями из приложения",
+        checked = api,
+        onCheckedChange = { api = it },
+        enabled = !running
+    )
+    if (api) {
+        PanelTextField(
+            value = apiListen,
+            onValueChange = { apiListen = it.trim() },
+            label = "Адрес API",
+            placeholder = "127.0.0.1:9190",
+            enabled = !running
+        )
+    }
+    Spacer(Modifier.height(10.dp))
+
+    PanelTextField(
+        value = tgbotToken,
+        onValueChange = { tgbotToken = it.trim() },
+        label = "Токен Telegram-бота (необязательно)",
+        placeholder = "123456:ABC…",
+        enabled = !running
+    )
+    Spacer(Modifier.height(10.dp))
+
+    PanelTextField(
+        value = tgbotAdmin,
+        onValueChange = { tgbotAdmin = it.filter(Char::isDigit).take(20) },
+        label = "ID администратора бота (необязательно)",
+        keyboardType = KeyboardType.Number,
+        enabled = !running
+    )
+    Spacer(Modifier.height(4.dp))
+
+    ToggleRow(
+        title = "Переустановить поверх",
+        subtitle = "--force: заменить существующую установку",
+        checked = force,
+        onCheckedChange = { force = it },
+        enabled = !running
+    )
+
+    Spacer(Modifier.height(8.dp))
+    Text(
+        "MTProxyL ставится неинтерактивно, открывает порт прокси в UFW и сохраняет " +
+            "ключ API в /etc/mtproxyl-api/servpanel.key. Пользователями можно управлять " +
+            "во вкладке «Прокси».",
+        style = MaterialTheme.typography.bodySmall,
+        color = PanelMuted
+    )
+
+    InstallButton(enabled, running) {
+        val options = mutableMapOf<String, Any>()
+        options["mplMode"] = mode
+        options["mplEngine"] = engine
+        options["mplProxyMode"] = proxyMode
+        options["mplPort"] = port.toIntOrNull() ?: 443
+        options["mplSni"] = sni
+        if (host.isNotBlank()) options["mplHost"] = host
+        if (secret.isNotBlank()) options["mplSecret"] = secret
+        if (adTag.isNotBlank()) options["mplAdTag"] = adTag
+        if (user.isNotBlank()) options["mplUser"] = user
+        if (userSecret.isNotBlank()) options["mplUserSecret"] = userSecret
+        options["mplZapret2"] = zapret2
+        options["mplSynLimiter"] = synLimiter
+        options["mplMeko"] = meko
+        if (selfmask.isNotBlank()) {
+            options["mplSelfmask"] = selfmask
+            options["mplSelfmaskCert"] = selfmaskCert
+            if (selfmaskEmail.isNotBlank()) options["mplSelfmaskEmail"] = selfmaskEmail
+        }
+        options["mplWeb"] = web
+        if (web) {
+            options["mplWebDomain"] = webDomain
+            options["mplWebCarrier"] = webCarrier
+        }
+        options["mplApi"] = api
+        if (api && apiListen.isNotBlank()) options["mplApiListen"] = apiListen
+        if (tgbotToken.isNotBlank()) options["mplTgbotToken"] = tgbotToken
+        if (tgbotAdmin.isNotBlank()) options["mplTgbotAdmin"] = tgbotAdmin
+        options["mplForce"] = force
+        onInstall(options)
+    }
+}
+
+@Composable
+private fun WarpInstallOptions(
+    running: Boolean,
+    enabled: Boolean,
+    onInstall: (Map<String, Any>) -> Unit
+) {
+    var listenIp by remember { mutableStateOf("10.8.1.1") }
+    var listenPort by remember { mutableStateOf("443") }
+    var socksPort by remember { mutableStateOf("40000") }
+
+    PanelTextField(
+        value = listenIp,
+        onValueChange = { listenIp = it.trim() },
+        label = "IP туннеля",
+        placeholder = "10.8.1.1",
+        enabled = !running
+    )
+    Spacer(Modifier.height(10.dp))
+    PanelTextField(
+        value = listenPort,
+        onValueChange = { listenPort = it.filter(Char::isDigit).take(5) },
+        label = "Порт Xray",
+        keyboardType = KeyboardType.Number,
+        enabled = !running
+    )
+    Spacer(Modifier.height(10.dp))
+    PanelTextField(
+        value = socksPort,
+        onValueChange = { socksPort = it.filter(Char::isDigit).take(5) },
+        label = "SOCKS-порт",
+        keyboardType = KeyboardType.Number,
+        enabled = !running
+    )
+
+    InstallButton(enabled, running) {
+        val options = mutableMapOf<String, Any>()
+        options["listenIp"] = listenIp
+        options["listenPort"] = listenPort.toIntOrNull() ?: 443
+        options["socksPort"] = socksPort.toIntOrNull() ?: 40000
+        onInstall(options)
     }
 }

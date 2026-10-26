@@ -25,6 +25,7 @@ import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Language
 import androidx.compose.material.icons.filled.Logout
 import androidx.compose.material.icons.filled.NetworkCheck
+import androidx.compose.material.icons.filled.Send
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.SystemUpdate
 import androidx.compose.material.icons.filled.Tune
@@ -64,6 +65,7 @@ private val moreEntries = listOf(
     MoreEntry(MoreScreen.Ssl, "Домены и SSL", "Let's Encrypt, Nginx и сертификаты", Icons.Filled.Language),
     MoreEntry(MoreScreen.Updates, "Обновления", "GitHub, архив и откат панели", Icons.Filled.SystemUpdate),
     MoreEntry(MoreScreen.Install, "Установка", "AmneziaWG, AdGuard, MTProto, WARP", Icons.Filled.Download),
+    MoreEntry(MoreScreen.Proxy, "Прокси", "MTProxyL, Telemt: пользователи и лимиты", Icons.Filled.Send),
     MoreEntry(MoreScreen.Diagnostics, "Диагностика", "Ping, traceroute и журналы", Icons.Filled.NetworkCheck),
     MoreEntry(MoreScreen.Services, "Службы", "Перезапуск системных сервисов", Icons.Filled.Settings),
     MoreEntry(MoreScreen.Users, "Пользователи", "Доступы, роли и 2FA", Icons.Filled.Group),

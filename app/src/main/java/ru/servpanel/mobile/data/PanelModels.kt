@@ -9,7 +9,13 @@ import java.util.Locale
 // ("45.2"), поэтому все числовые поля читаем через optDouble/optString.
 // ---------------------------------------------------------------------------
 
-internal fun JSONObject.str(key: String): String = optString(key, "").trim()
+// org.json превращает JSON null в строку "null" (optString → toString),
+// поэтому явно отсекаем JSONObject.NULL: для модели это пустое значение.
+internal fun JSONObject.str(key: String): String {
+    val value = opt(key) ?: return ""
+    if (value === JSONObject.NULL) return ""
+    return value.toString().trim()
+}
 
 internal fun JSONObject.num(key: String): Int =
     optDouble(key, 0.0).takeIf { !it.isNaN() }?.toInt() ?: 0
@@ -32,8 +38,10 @@ internal fun JSONArray.objects(): List<JSONObject> = buildList {
 
 internal fun JSONArray.stringList(): List<String> = buildList {
     for (i in 0 until length()) {
-        val v = optString(i, "")
-        if (v.isNotEmpty()) add(v)
+        val v = opt(i)
+        if (v == null || v === JSONObject.NULL) continue
+        val s = v.toString()
+        if (s.isNotEmpty()) add(s)
     }
 }
 
@@ -41,7 +49,8 @@ private fun JSONObject.mapOfStrings(): Map<String, String> = buildMap {
     val keys = keys()
     while (keys.hasNext()) {
         val k = keys.next()
-        put(k, optString(k, ""))
+        val v = opt(k)
+        if (v != null && v !== JSONObject.NULL) put(k, v.toString())
     }
 }
 
@@ -1160,5 +1169,251 @@ data class AwgConfig(val content: String, val file: String) {
     companion object {
         fun from(json: JSONObject): AwgConfig =
             AwgConfig(json.str("content"), json.str("file"))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// MTProto-прокси: MTProxyL / Telemt / MTProto.zig (панель 2.8+)
+// ---------------------------------------------------------------------------
+
+private fun JSONObject.intOrNull(key: String): Int? =
+    if (!has(key) || isNull(key)) null else optInt(key)
+
+private fun JSONObject.longOrNull(key: String): Long? =
+    if (!has(key) || isNull(key)) null else optLong(key)
+
+data class ProxyCapabilities(
+    val users: Boolean = false,
+    val limits: Boolean = false,
+    val quota: Boolean = false,
+    val rate: Boolean = false,
+    val uniqueIps: Boolean = false,
+    val connections: Boolean = false,
+    val traffic: Boolean = false,
+    val notes: Boolean = false,
+    val expiry: Boolean = false,
+    val adTag: Boolean = false,
+    val web: Boolean = false,
+    val restart: Boolean = false
+) {
+    companion object {
+        fun from(json: JSONObject?): ProxyCapabilities {
+            val src = json ?: JSONObject()
+            return ProxyCapabilities(
+                users = src.flag("users"),
+                limits = src.flag("limits"),
+                quota = src.flag("quota"),
+                rate = src.flag("rate"),
+                uniqueIps = src.flag("uniqueIps"),
+                connections = src.flag("connections"),
+                traffic = src.flag("traffic"),
+                notes = src.flag("notes"),
+                expiry = src.flag("expiry"),
+                adTag = src.flag("adTag"),
+                web = src.flag("web"),
+                restart = src.flag("restart")
+            )
+        }
+    }
+}
+
+/** Состояние движка MTProto-прокси (`/api/proxy/status`). */
+data class ProxyStatus(
+    val backend: String = "none",
+    val limited: Boolean = false,
+    val needsKey: Boolean = false,
+    val capabilities: ProxyCapabilities = ProxyCapabilities(),
+    val reason: String = "",
+    val version: String = "",
+    val mode: String = "",
+    val running: Boolean = false,
+    val port: Int? = null,
+    val domain: String = "",
+    val uptime: Long = 0L,
+    val connections: Int = 0,
+    val uniqueIps: Int = 0,
+    val trafficTotal: Long = 0L,
+    val trafficIn: Long = 0L,
+    val trafficOut: Long = 0L,
+    val usersCount: Int = 0,
+    val configPath: String = "",
+    val error: String = ""
+) {
+    val title: String
+        get() = when (backend) {
+            "mtproxyl" -> "MTProxyL"
+            "telemt" -> "Telemt"
+            "zig" -> "MTProto.zig"
+            "demo" -> "Демо-прокси"
+            else -> "Не найден"
+        }
+
+    val available: Boolean get() = backend != "none" && backend != "zig"
+
+    companion object {
+        fun from(json: JSONObject): ProxyStatus {
+            return ProxyStatus(
+                backend = json.str("backend").ifBlank { "none" },
+                limited = json.flag("limited"),
+                needsKey = json.flag("needsKey"),
+                capabilities = ProxyCapabilities.from(json.objOrNull("capabilities")),
+                reason = json.str("reason"),
+                version = json.str("version"),
+                mode = json.str("mode"),
+                running = json.flag("running"),
+                port = json.intOrNull("port")?.takeIf { it > 0 },
+                domain = json.str("domain"),
+                uptime = json.long("uptime"),
+                connections = json.num("connections"),
+                uniqueIps = json.num("uniqueIps"),
+                trafficTotal = json.long("trafficTotal"),
+                trafficIn = json.long("trafficIn"),
+                trafficOut = json.long("trafficOut"),
+                usersCount = json.num("users"),
+                configPath = json.str("configPath"),
+                error = json.str("error")
+            )
+        }
+    }
+}
+
+data class ProxyTraffic(
+    val inBytes: Long = 0L,
+    val outBytes: Long = 0L,
+    val totalBytes: Long = 0L
+) {
+    companion object {
+        fun from(json: JSONObject?): ProxyTraffic {
+            val src = json ?: JSONObject()
+            return ProxyTraffic(
+                inBytes = src.long("in_bytes"),
+                outBytes = src.long("out_bytes"),
+                totalBytes = src.long("total_bytes")
+            )
+        }
+    }
+}
+
+data class ProxyLinks(
+    val classic: List<String> = emptyList(),
+    val secure: List<String> = emptyList(),
+    val tls: List<String> = emptyList(),
+    val web: List<String> = emptyList(),
+    val tlsDomains: List<String> = emptyList()
+) {
+    /** Все ссылки в одном списке без повторов. */
+    fun flat(): List<String> {
+        val all = classic + secure + tls + web + tlsDomains
+        return all.filter { it.isNotBlank() }.distinct()
+    }
+
+    companion object {
+        fun from(json: JSONObject?): ProxyLinks {
+            val src = json ?: JSONObject()
+            return ProxyLinks(
+                classic = src.array("classic").stringList(),
+                secure = src.array("secure").stringList(),
+                tls = src.array("tls").stringList(),
+                web = src.array("web").stringList(),
+                tlsDomains = src.array("tls_domains").objects().mapNotNull { it.str("link").ifBlank { null } }
+            )
+        }
+    }
+}
+
+/** Пользователь прокси (`/api/proxy/users`). */
+data class ProxyUser(
+    val username: String,
+    val enabled: Boolean = true,
+    val inRuntime: Boolean = true,
+    val adTag: String = "",
+    val maxTcpConns: Int? = null,
+    val expiration: String = "",
+    val quotaBytes: Long? = null,
+    val rateUpBps: Long? = null,
+    val rateDownBps: Long? = null,
+    val maxUniqueIps: Int? = null,
+    val currentConnections: Int = 0,
+    val activeUniqueIps: Int = 0,
+    val totalOctets: Long = 0L,
+    val notes: String = "",
+    val created: Long = 0L,
+    val traffic: ProxyTraffic = ProxyTraffic(),
+    val secret: String = "",
+    val links: ProxyLinks = ProxyLinks()
+) {
+    val quotaFraction: Float?
+        get() {
+            val quota = quotaBytes ?: return null
+            if (quota <= 0L) return null
+            val used = traffic.totalBytes.takeIf { it > 0 } ?: totalOctets
+            return (used.toDouble() / quota.toDouble()).toFloat().coerceIn(0f, 1f)
+        }
+
+    val expired: Boolean
+        get() {
+            if (expiration.isBlank()) return false
+            val time = runCatching { java.time.OffsetDateTime.parse(expiration).toInstant().toEpochMilli() }
+                .getOrNull() ?: return false
+            return time < System.currentTimeMillis()
+        }
+
+    companion object {
+        fun from(json: JSONObject): ProxyUser = ProxyUser(
+            username = json.str("username"),
+            enabled = json.optBoolean("enabled", true),
+            inRuntime = json.optBoolean("in_runtime", true),
+            adTag = json.str("user_ad_tag"),
+            maxTcpConns = json.intOrNull("max_tcp_conns"),
+            expiration = json.str("expiration_rfc3339"),
+            quotaBytes = json.longOrNull("data_quota_bytes"),
+            rateUpBps = json.longOrNull("rate_limit_up_bps"),
+            rateDownBps = json.longOrNull("rate_limit_down_bps"),
+            maxUniqueIps = json.intOrNull("max_unique_ips"),
+            currentConnections = json.num("current_connections"),
+            activeUniqueIps = json.num("active_unique_ips"),
+            totalOctets = json.long("total_octets"),
+            notes = json.str("notes"),
+            created = json.long("created"),
+            traffic = ProxyTraffic.from(json.objOrNull("traffic")),
+            secret = json.str("secret"),
+            links = ProxyLinks.from(json.objOrNull("links"))
+        )
+    }
+}
+
+data class ProxyUserLinks(
+    val username: String,
+    val links: List<String>,
+    val qr: String
+) {
+    companion object {
+        fun from(json: JSONObject): ProxyUserLinks = ProxyUserLinks(
+            username = json.str("username"),
+            links = json.array("links").stringList(),
+            qr = json.str("qr")
+        )
+    }
+}
+
+data class ProxyBotStatus(
+    val enabled: Boolean = false,
+    val running: Boolean = false,
+    val tokenSet: Boolean = false,
+    val token: String = "",
+    val admins: List<String> = emptyList(),
+    val lastUpdateId: Long = 0L,
+    val configFile: String = ""
+) {
+    companion object {
+        fun from(json: JSONObject): ProxyBotStatus = ProxyBotStatus(
+            enabled = json.flag("enabled"),
+            running = json.flag("running"),
+            tokenSet = json.flag("tokenSet") || json.str("token").isNotBlank(),
+            token = json.str("token"),
+            admins = json.array("admins").stringList(),
+            lastUpdateId = json.long("lastUpdateId"),
+            configFile = json.str("configFile")
+        )
     }
 }

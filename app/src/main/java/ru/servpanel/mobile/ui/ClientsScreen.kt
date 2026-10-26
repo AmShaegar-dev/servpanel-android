@@ -20,6 +20,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -165,6 +166,15 @@ fun ClientsScreen(vm: AppViewModel, server: ServerProfile) {
     }
     val sorted = filtered.sortedWith(if (ascending) comparator else comparator.reversed())
 
+    // LazyColumn при смене порядка «держит» первый видимый элемент по key и
+    // прокручивает список к нему — из-за этого после сортировки страница
+    // уезжала вниз, а верхний клиент пропадал из вида. После любого изменения
+    // сортировки или поиска возвращаемся к первому элементу.
+    val listState = rememberLazyListState()
+    LaunchedEffect(sort, ascending, query) {
+        if (sorted.isNotEmpty()) listState.scrollToItem(0)
+    }
+
     Column(Modifier.fillMaxSize()) {
         Column(Modifier.padding(start = 16.dp, end = 16.dp, top = 12.dp)) {
             ScreenHeader(
@@ -251,6 +261,7 @@ fun ClientsScreen(vm: AppViewModel, server: ServerProfile) {
 
             else -> LazyColumn(
                 modifier = Modifier.fillMaxSize(),
+                state = listState,
                 contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 4.dp, bottom = 24.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
