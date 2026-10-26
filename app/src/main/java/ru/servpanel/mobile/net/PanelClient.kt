@@ -297,8 +297,11 @@ class PanelClient(
             }
             .build()
         val callClient = client.newBuilder()
-            .callTimeout(15, TimeUnit.SECONDS)
-            .readTimeout(15, TimeUnit.SECONDS)
+            // Метрики — необязательный источник для карточки сервера, поэтому
+            // не ждём стандартные 6 с на закрытом порту.
+            .connectTimeout(3, TimeUnit.SECONDS)
+            .callTimeout(5, TimeUnit.SECONDS)
+            .readTimeout(5, TimeUnit.SECONDS)
             .build()
         try {
             callClient.newCall(request).execute().use { response ->

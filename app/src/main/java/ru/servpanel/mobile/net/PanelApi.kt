@@ -2,13 +2,17 @@ package ru.servpanel.mobile.net
 
 import android.content.Context
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.json.JSONArray
 import org.json.JSONObject
+import ru.servpanel.mobile.data.MetricsSnapshot
 import ru.servpanel.mobile.data.PanelUrl
 import ru.servpanel.mobile.data.ServerProfile
+import ru.servpanel.mobile.data.SysInfo
 import java.net.ConnectException
 import java.net.SocketTimeoutException
 import java.net.UnknownHostException
@@ -28,24 +32,31 @@ class PanelApi(private val context: Context) {
         val started = System.currentTimeMillis()
 
         try {
-            // Отдельный metrics-сервер (если порт задан) отвечает без сессии
-            // и переживает даже недоступный API — поэтому пробуем его первым.
-            val metrics = if (server.metricsPort > 0) {
-                runCatching { client.metrics() }.getOrNull()
-            } else {
-                null
+            // Метрики и sysinfo запрашиваем параллельно и «Пинг» считаем по
+            // одному запросу к API. Раньше запросы шли последовательно, а если
+            // порт метрик закрыт файрволом, ожидание connect-timeout (6 с)
+            // попадало в задержку на карточке, хотя панель отвечала быстро.
+            val parts = coroutineScope {
+                val metricsJob = async { timedMetrics(client, server) }
+                val sysStarted = System.currentTimeMillis()
+                val sys = runCatching { client.sysinfo() }
+                // Важно: время sysinfo фиксируем до await(), иначе в него
+                // попадёт ожидание метрик.
+                val sysMs = System.currentTimeMillis() - sysStarted
+                CheckParts(metrics = metricsJob.await(), sys = sys, sysMs = sysMs)
             }
-            val sysResult = runCatching { client.sysinfo() }
-            val sys = sysResult.getOrNull()
+            val metrics = parts.metrics.value
+            val sys = parts.sys.getOrNull()
+            val latency = if (sys != null) parts.sysMs else parts.metrics.ms
 
             if (sys == null && metrics == null) {
-                val error = sysResult.exceptionOrNull()
+                val error = parts.sys.exceptionOrNull()
                 return@withContext when {
                     error is PanelApiException && (error.status == 401 || error.status == 403) ->
                         ServerHealth(
                             online = true,
                             needsLogin = true,
-                            latencyMs = System.currentTimeMillis() - started,
+                            latencyMs = latency,
                             checkedAt = now
                         )
 
@@ -63,7 +74,7 @@ class PanelApi(private val context: Context) {
             val metricsSys = metrics?.toSysInfo()
             var health = ServerHealth(
                 online = true,
-                latencyMs = System.currentTimeMillis() - started,
+                latencyMs = latency,
                 checkedAt = now,
                 cpuPercent = metrics?.cpuPercent ?: sys?.cpu,
                 ramPercent = metrics?.ramPercent ?: sys?.ram,
@@ -78,19 +89,28 @@ class PanelApi(private val context: Context) {
                 https = metrics?.tls ?: false
             )
 
-            if (metrics == null) {
-                runCatching {
-                    val clients = client.clients()
-                    val onlineClients = clients.count { it.statusCode == "active" || it.statusCode == "recent" }
-                    health = health.copy(
-                        clientsTotal = clients.size,
-                        clientsOnline = onlineClients
-                    )
+            // Список клиентов нужен только без метрик, данные сессии — всегда.
+            // Оба запроса независимы, поэтому идём в них одновременно.
+            val extras = coroutineScope {
+                val clientsJob = if (metrics == null) {
+                    async { runCatching { client.clients() }.getOrNull() }
+                } else {
+                    null
                 }
+                val securityJob = async { runCatching { client.securityStatus() }.getOrNull() }
+                clientsJob?.await() to securityJob.await()
             }
 
-            runCatching {
-                val security = client.securityStatus()
+            extras.first?.let { clients ->
+                health = health.copy(
+                    clientsTotal = clients.size,
+                    clientsOnline = clients.count {
+                        it.statusCode == "active" || it.statusCode == "recent"
+                    }
+                )
+            }
+
+            extras.second?.let { security ->
                 health = health.copy(
                     user = security.user.ifBlank { null },
                     role = security.role.ifBlank { null },
@@ -103,7 +123,7 @@ class PanelApi(private val context: Context) {
             // API ответил 401/403, но метрики доступны: сервер на связи,
             // просто нужно войти.
             if (sys == null) {
-                val error = sysResult.exceptionOrNull()
+                val error = parts.sys.exceptionOrNull()
                 if (error is PanelApiException && (error.status == 401 || error.status == 403)) {
                     health = health.copy(needsLogin = true)
                 }
@@ -131,6 +151,43 @@ class PanelApi(private val context: Context) {
         } catch (e: Exception) {
             ServerHealth(online = false, error = describe(e), checkedAt = now)
         }
+    }
+
+    private data class Timed<T>(val value: T, val ms: Long)
+
+    private data class CheckParts(
+        val metrics: Timed<MetricsSnapshot?>,
+        val sys: Result<SysInfo>,
+        val sysMs: Long
+    )
+
+    /**
+     * Метрики — необязательный источник: если порт закрыт, не ждём полный
+     * connect-timeout, чтобы карточка сервера обновлялась быстрее.
+     *
+     * Недоступный порт запоминаем на [METRICS_COOLDOWN_MS], иначе каждая
+     * проверка снова висела бы на нём до таймаута.
+     */
+    private suspend fun timedMetrics(
+        client: PanelClient,
+        server: ServerProfile
+    ): Timed<MetricsSnapshot?> {
+        if (server.metricsPort <= 0) return Timed(null, 0L)
+        val key = "${server.id}:${server.metricsPort}"
+        val until = metricsCooldown[key]
+        if (until != null) {
+            if (until > System.currentTimeMillis()) return Timed(null, 0L)
+            metricsCooldown.remove(key)
+        }
+
+        val started = System.currentTimeMillis()
+        val result = runCatching { client.metrics() }
+        val value = result.getOrNull()
+        val error = result.exceptionOrNull()
+        if (value == null && error is PanelApiException && error.status == 0) {
+            metricsCooldown[key] = System.currentTimeMillis() + METRICS_COOLDOWN_MS
+        }
+        return Timed(value, System.currentTimeMillis() - started)
     }
 
     /** Проверка адреса из редактора: при отсутствии схемы пробует https, затем http. */
@@ -226,6 +283,12 @@ class PanelApi(private val context: Context) {
 
     private companion object {
         const val UA = "ServpanelMobile/1.0 (Android)"
+
+        /** Сколько не дёргать порт метрик после сетевой ошибки. */
+        const val METRICS_COOLDOWN_MS = 5 * 60 * 1000L
+
+        /** Ключ — `id сервера:порт метрик`; проверки идут параллельно. */
+        val metricsCooldown = java.util.concurrent.ConcurrentHashMap<String, Long>()
     }
 }
 
