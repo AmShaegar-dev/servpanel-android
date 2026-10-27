@@ -28,8 +28,11 @@ import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.OpenInNew
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.SystemUpdate
 import androidx.compose.material.icons.filled.Terminal
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -40,8 +43,10 @@ import androidx.compose.material3.ExtendedFloatingActionButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -59,6 +64,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import kotlin.math.roundToInt
+import ru.servpanel.mobile.AppUpdateState
 import ru.servpanel.mobile.data.ServerProfile
 import ru.servpanel.mobile.net.ServerHealth
 import ru.servpanel.mobile.ui.theme.PanelAccent
@@ -79,6 +86,7 @@ fun ServersScreen(
     health: Map<String, ServerHealth>,
     refreshing: Boolean,
     lastRefreshAt: Long?,
+    appUpdate: AppUpdateState,
     onOpen: (String) -> Unit,
     onAdd: () -> Unit,
     onEdit: (String) -> Unit,
@@ -86,7 +94,9 @@ fun ServersScreen(
     onRefreshAll: () -> Unit,
     onRefreshOne: (ServerProfile) -> Unit,
     onOpenExternal: (String) -> Unit,
-    onInstall: () -> Unit
+    onInstall: () -> Unit,
+    onUpdateApp: () -> Unit,
+    onLaterUpdate: () -> Unit
 ) {
     val onlineCount = servers.count { health[it.id]?.online == true }
     val clientsOnline = servers.sumOf { health[it.id]?.clientsOnline ?: 0 }
@@ -145,6 +155,16 @@ fun ServersScreen(
                     refreshing = refreshing,
                     lastRefreshAt = lastRefreshAt
                 )
+            }
+
+            if (appUpdate.hasUpdate) {
+                item {
+                    AppUpdateCard(
+                        update = appUpdate,
+                        onUpdate = onUpdateApp,
+                        onLater = onLaterUpdate
+                    )
+                }
             }
 
             if (servers.isEmpty()) {
@@ -246,6 +266,102 @@ private fun SummaryCard(
             }
         }
     }
+}
+
+@Composable
+private fun AppUpdateCard(
+    update: AppUpdateState,
+    onUpdate: () -> Unit,
+    onLater: () -> Unit
+) {
+    val release = update.release ?: return
+
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(18.dp),
+        colors = CardDefaults.cardColors(containerColor = PanelSurface),
+        border = BorderStroke(1.dp, PanelAccent.copy(alpha = 0.45f))
+    ) {
+        Column(Modifier.padding(16.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = PanelAccent.copy(alpha = 0.12f),
+                    modifier = Modifier.size(38.dp)
+                ) {
+                    Icon(
+                        Icons.Filled.SystemUpdate,
+                        contentDescription = null,
+                        tint = PanelAccent,
+                        modifier = Modifier.padding(8.dp)
+                    )
+                }
+                Spacer(Modifier.width(12.dp))
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        "Доступно обновление ${release.versionName}",
+                        style = MaterialTheme.typography.bodyLarge,
+                        fontWeight = FontWeight.SemiBold,
+                        color = PanelText
+                    )
+                    Text(
+                        when {
+                            update.downloading -> "Скачивание ${update.percentText()}"
+                            update.error != null -> update.error
+                            else -> "Скачать APK и установить поверх текущей версии"
+                        },
+                        style = MaterialTheme.typography.labelSmall,
+                        color = if (update.error != null) PanelRed else PanelMuted
+                    )
+                }
+            }
+
+            if (update.downloading) {
+                Spacer(Modifier.height(12.dp))
+                LinearProgressIndicator(
+                    progress = { update.progress ?: 0f },
+                    modifier = Modifier.fillMaxWidth(),
+                    color = PanelAccent,
+                    trackColor = PanelBorder
+                )
+            }
+
+            Spacer(Modifier.height(12.dp))
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Button(
+                    onClick = onUpdate,
+                    enabled = !update.downloading,
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = PanelAccent,
+                        contentColor = Color.White
+                    )
+                ) {
+                    if (update.downloading) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(14.dp),
+                            strokeWidth = 2.dp,
+                            color = Color.White
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Text("Скачивание…")
+                    } else {
+                        Text("Обновить приложение")
+                    }
+                }
+                TextButton(onClick = onLater) {
+                    Text("Позже", color = PanelMuted)
+                }
+            }
+        }
+    }
+}
+
+private fun AppUpdateState.percentText(): String {
+    val percent = progress ?: return "…"
+    return "${(percent * 100).roundToInt()}%"
 }
 
 @Composable

@@ -25,10 +25,12 @@ import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Language
 import androidx.compose.material.icons.filled.Logout
 import androidx.compose.material.icons.filled.NetworkCheck
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Send
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.SystemUpdate
 import androidx.compose.material.icons.filled.Tune
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
@@ -40,6 +42,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import kotlin.math.roundToInt
 import ru.servpanel.mobile.AppViewModel
 import ru.servpanel.mobile.BuildConfig
 import ru.servpanel.mobile.MoreScreen
@@ -180,6 +183,89 @@ fun MoreScreenList(vm: AppViewModel, server: ServerProfile) {
                         color = PanelRed,
                         fontWeight = FontWeight.Medium
                     )
+                }
+            }
+        }
+
+        item {
+            val update = vm.appUpdate
+            val accent = if (update.hasUpdate) PanelAccent else PanelMuted
+            Surface(
+                shape = RoundedCornerShape(16.dp),
+                color = PanelSurface,
+                border = BorderStroke(
+                    1.dp,
+                    if (update.hasUpdate) PanelAccent.copy(alpha = 0.45f) else PanelBorder
+                ),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable(enabled = !update.downloading) {
+                        when {
+                            update.ready != null -> vm.installAppUpdate()
+                            update.hasUpdate -> vm.downloadAppUpdate()
+                            else -> vm.checkAppUpdate()
+                        }
+                    }
+            ) {
+                Row(
+                    modifier = Modifier.padding(14.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(
+                        imageVector = if (update.hasUpdate) {
+                            Icons.Filled.SystemUpdate
+                        } else {
+                            Icons.Filled.Refresh
+                        },
+                        contentDescription = null,
+                        tint = accent
+                    )
+                    Spacer(Modifier.width(12.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text(
+                            "Обновить приложение",
+                            style = MaterialTheme.typography.bodyLarge,
+                            fontWeight = FontWeight.Medium,
+                            color = PanelText
+                        )
+                        Text(
+                            when {
+                                update.downloading -> {
+                                    val percent = update.progress?.let {
+                                        "${(it * 100).roundToInt()}%"
+                                    } ?: "…"
+                                    "Скачивание $percent"
+                                }
+
+                                update.ready != null ->
+                                    "Нажмите, чтобы установить ${update.release?.versionName.orEmpty()}"
+
+                                update.hasUpdate ->
+                                    "Скачать и установить ${update.release?.versionName.orEmpty()}"
+
+                                update.checking -> "Проверяем обновления…"
+
+                                update.error != null -> update.error
+
+                                else -> "Установлена последняя версия"
+                            },
+                            style = MaterialTheme.typography.labelSmall,
+                            color = if (update.error != null) PanelRed else PanelMuted
+                        )
+                    }
+                    if (update.downloading) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(18.dp),
+                            strokeWidth = 2.dp,
+                            color = PanelAccent
+                        )
+                    } else {
+                        Icon(
+                            Icons.Filled.ChevronRight,
+                            contentDescription = null,
+                            tint = PanelMuted
+                        )
+                    }
                 }
             }
         }

@@ -17,8 +17,9 @@ import org.json.JSONObject
  */
 class PersistentCookieJar(context: Context, serverId: String) : CookieJar {
 
-    private val prefs = context.applicationContext
-        .getSharedPreferences("servpanel_cookies", Context.MODE_PRIVATE)
+    // Cookie сессии шифруются ключом из Android Keystore: файл настроек
+    // бесполезен без устройства, а старые значения мигрируют автоматически.
+    private val store = SecureStore(context, "servpanel_cookies")
     private val storageKey = "cookies_$serverId"
     private val lock = Any()
     private val cookies = linkedMapOf<String, Pair<String, Cookie>>()
@@ -45,27 +46,31 @@ class PersistentCookieJar(context: Context, serverId: String) : CookieJar {
         synchronized(lock) {
             val now = System.currentTimeMillis()
             val expired = mutableListOf<String>()
-            val result = mutableListOf<Cookie>()
+            val matched = mutableListOf<Pair<String, Cookie>>()
             for ((key, entry) in cookies) {
                 val cookie = entry.second
                 if (cookie.expiresAt <= now) {
                     expired += key
                     continue
                 }
-                if (cookie.matches(url)) result += cookie
+                if (cookie.matches(url)) matched += key to cookie
             }
             if (expired.isNotEmpty()) {
                 expired.forEach { cookies.remove(it) }
                 persist()
             }
-            return result
+            // Сессия панели скользящая, но OkHttp отдаёт в запрос копию cookie
+            // с тем expiresAt, что пришёл при последнем ответе. Поэтому после
+            // каждого ответа панели срок обновляется ещё раз (saveFromResponse),
+            // и сессия живёт 30 дней после последнего запроса, а не с входа.
+            return matched.map { it.second }
         }
     }
 
     fun clear() {
         synchronized(lock) {
             cookies.clear()
-            prefs.edit().remove(storageKey).apply()
+            store.remove(storageKey)
         }
     }
 
@@ -73,7 +78,7 @@ class PersistentCookieJar(context: Context, serverId: String) : CookieJar {
         "${cookie.name}|${cookie.domain}|${cookie.path}"
 
     private fun restore() {
-        val raw = prefs.getString(storageKey, null) ?: return
+        val raw = store.getString(storageKey) ?: return
         val array = JSONArray(raw)
         for (i in 0 until array.length()) {
             val item = array.optJSONObject(i) ?: continue
@@ -94,6 +99,6 @@ class PersistentCookieJar(context: Context, serverId: String) : CookieJar {
                     .put("header", entry.second.toString())
             )
         }
-        prefs.edit().putString(storageKey, array.toString()).apply()
+        store.putString(storageKey, array.toString())
     }
 }

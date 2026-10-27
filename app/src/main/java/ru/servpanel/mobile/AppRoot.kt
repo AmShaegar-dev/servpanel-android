@@ -2,7 +2,11 @@ package ru.servpanel.mobile
 
 import android.content.Intent
 import android.net.Uri
+import android.util.Log
 import android.widget.Toast
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -36,12 +40,29 @@ fun AppRoot(vm: AppViewModel) {
         }
     }
 
+    // При запуске проверяем последний релиз и предлагаем обновление.
+    // Состояние дублируем в лог: видно, дошёл ли запрос до GitHub.
+    val updateState = vm.appUpdate
+    LaunchedEffect(Unit) {
+        Log.i("ServpanelUpdate", "start check, current=${BuildConfig.VERSION_NAME}")
+        vm.checkAppUpdate(promptIfNew = true)
+    }
+    LaunchedEffect(updateState) {
+        Log.i(
+            "ServpanelUpdate",
+            "checking=${updateState.checking} release=${updateState.release?.versionName} " +
+                "current=${BuildConfig.VERSION_NAME} error=${updateState.error} " +
+                "prompt=${updateState.prompt}"
+        )
+    }
+
     when (val screen = vm.screen) {
         is Screen.Servers -> ServersScreen(
             servers = vm.servers,
             health = vm.health,
             refreshing = vm.refreshing,
             lastRefreshAt = vm.lastRefreshAt,
+            appUpdate = vm.appUpdate,
             onOpen = vm::openServer,
             onAdd = { vm.openEditor(null) },
             onEdit = { vm.openEditor(it) },
@@ -49,7 +70,9 @@ fun AppRoot(vm: AppViewModel) {
             onRefreshAll = vm::refreshAll,
             onRefreshOne = vm::refreshOne,
             onOpenExternal = { openExternal(vm, it) },
-            onInstall = vm::openInstall
+            onInstall = vm::openInstall,
+            onUpdateApp = vm::downloadAppUpdate,
+            onLaterUpdate = vm::dismissAppUpdatePrompt
         )
 
         Screen.InstallPanel -> InstallPanelScreen(
@@ -83,6 +106,28 @@ fun AppRoot(vm: AppViewModel) {
                 onSave = vm::saveServer,
                 onDelete = vm::deleteServer,
                 onProbe = vm::probe
+            )
+        }
+    }
+
+    if (vm.appUpdate.prompt) {
+        val release = vm.appUpdate.release
+        if (release != null) {
+            AlertDialog(
+                onDismissRequest = vm::dismissAppUpdatePrompt,
+                title = { Text("Доступно обновление ${release.versionName}") },
+                text = {
+                    Text(
+                        "Скачать новую версию с GitHub и установить поверх текущей? " +
+                            "Серверы и настройки сохранятся."
+                    )
+                },
+                confirmButton = {
+                    TextButton(onClick = vm::downloadAppUpdate) { Text("Обновить") }
+                },
+                dismissButton = {
+                    TextButton(onClick = vm::dismissAppUpdatePrompt) { Text("Позже") }
+                }
             )
         }
     }

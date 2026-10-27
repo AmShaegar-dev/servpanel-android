@@ -131,6 +131,9 @@ class PanelClient(
             .method(method, requestBody)
             .header("Accept", "application/json, text/plain, */*")
             .header("X-Requested-With", "ServpanelMobile")
+            // Панель по этому заголовку выдаёт мобильному клиенту длинную
+            // сессию (30 дней, скользящую). Браузер его не отправляет.
+            .header("X-Servpanel-Client", "android")
             .build()
         val callClient = client.newBuilder()
             .callTimeout(timeoutSeconds, TimeUnit.SECONDS)

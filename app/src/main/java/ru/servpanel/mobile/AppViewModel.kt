@@ -1,6 +1,7 @@
 package ru.servpanel.mobile
 
 import android.app.Application
+import android.content.Context
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -14,12 +15,15 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import ru.servpanel.mobile.data.ServerProfile
 import ru.servpanel.mobile.data.ServersStore
+import ru.servpanel.mobile.net.AppRelease
+import ru.servpanel.mobile.net.AppUpdater
 import ru.servpanel.mobile.net.LoginResult
 import ru.servpanel.mobile.net.PanelApi
 import ru.servpanel.mobile.net.PanelApiException
 import ru.servpanel.mobile.net.PanelClient
 import ru.servpanel.mobile.net.ProbeResult
 import ru.servpanel.mobile.net.ServerHealth
+import java.io.File
 
 sealed interface Screen {
     data object Servers : Screen
@@ -62,6 +66,27 @@ data class AuthState(
     val isAdmin: Boolean get() = role != "viewer"
 }
 
+/** Состояние проверки и загрузки обновления приложения. */
+data class AppUpdateState(
+    val checking: Boolean = false,
+    val release: AppRelease? = null,
+    val downloading: Boolean = false,
+    val downloaded: Long = 0L,
+    val total: Long = 0L,
+    val ready: File? = null,
+    val error: String? = null,
+    val prompt: Boolean = false
+) {
+    val hasUpdate: Boolean get() = release != null
+
+    val progress: Float?
+        get() = if (downloading && total > 0L) {
+            (downloaded.toFloat() / total).coerceIn(0f, 1f)
+        } else {
+            null
+        }
+}
+
 class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     private val store = ServersStore(app)
@@ -100,8 +125,16 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     var refreshTick by mutableIntStateOf(0)
         private set
 
+    /** Обновление приложения: проверка, загрузка APK и предложение установки. */
+    var appUpdate by mutableStateOf(AppUpdateState())
+        private set
+
+    private val updater = AppUpdater(app)
+    private val appPrefs = app.getSharedPreferences("servpanel_app", Context.MODE_PRIVATE)
+
     private var pollJob: Job? = null
     private var refreshJob: Job? = null
+    private var updateJob: Job? = null
     private var editorReturn: Screen = Screen.Servers
 
     // ------------------------------------------------------------------
@@ -392,6 +425,100 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    // ------------------------------------------------------------------
+    // Обновление приложения
+    // ------------------------------------------------------------------
+
+    /**
+     * Проверяет последний релиз на GitHub.
+     *
+     * @param promptIfNew показать диалог, если версия новее установленной.
+     */
+    fun checkAppUpdate(promptIfNew: Boolean = false) {
+        if (updateJob?.isActive == true) return
+        updateJob = viewModelScope.launch {
+            appUpdate = appUpdate.copy(checking = true, error = null)
+            try {
+                val release = updater.latest()
+                val newer = release.versionCode > BuildConfig.VERSION_CODE
+                appUpdate = appUpdate.copy(
+                    checking = false,
+                    release = if (newer) release else null,
+                    error = null,
+                    prompt = promptIfNew && newer && shouldPrompt(release.versionName)
+                )
+            } catch (e: Exception) {
+                appUpdate = appUpdate.copy(
+                    checking = false,
+                    error = e.message ?: "Не удалось проверить обновления"
+                )
+            }
+        }
+    }
+
+    /** Скачивает APK последнего релиза и сразу открывает установщик. */
+    fun downloadAppUpdate() {
+        val release = appUpdate.release ?: return
+        if (appUpdate.downloading) return
+        viewModelScope.launch {
+            appUpdate = appUpdate.copy(
+                downloading = true,
+                downloaded = 0L,
+                total = release.sizeBytes,
+                error = null,
+                prompt = false
+            )
+            try {
+                val file = updater.download(release) { done, total ->
+                    appUpdate = appUpdate.copy(downloaded = done, total = total)
+                }
+                appUpdate = appUpdate.copy(downloading = false, ready = file)
+                installAppUpdate()
+            } catch (e: Exception) {
+                appUpdate = appUpdate.copy(
+                    downloading = false,
+                    error = e.message ?: "Не удалось скачать обновление"
+                )
+            }
+        }
+    }
+
+    /** Открывает системный установщик для уже скачанного APK. */
+    fun installAppUpdate() {
+        val file = appUpdate.ready ?: return
+        if (!updater.canInstall()) {
+            appUpdate = appUpdate.copy(
+                error = "Разрешите установку из Servpanel и нажмите «Установить» ещё раз"
+            )
+            updater.openInstallSettings()
+            return
+        }
+        try {
+            updater.install(file)
+            appUpdate = appUpdate.copy(prompt = false)
+        } catch (e: Exception) {
+            appUpdate = appUpdate.copy(error = e.message ?: "Не удалось открыть установщик")
+        }
+    }
+
+    /** «Позже»: не предлагать эту версию сутки. */
+    fun dismissAppUpdatePrompt() {
+        appUpdate.release?.versionName?.let { version ->
+            appPrefs.edit()
+                .putString(KEY_SKIP_VERSION, version)
+                .putLong(KEY_SKIP_AT, System.currentTimeMillis())
+                .apply()
+        }
+        appUpdate = appUpdate.copy(prompt = false)
+    }
+
+    private fun shouldPrompt(version: String): Boolean {
+        val skipped = appPrefs.getString(KEY_SKIP_VERSION, null)
+        if (skipped != version) return true
+        val at = appPrefs.getLong(KEY_SKIP_AT, 0L)
+        return System.currentTimeMillis() - at > PROMPT_AGAIN_MS
+    }
+
     override fun onCleared() {
         super.onCleared()
         clients.values.forEach { it.clearSession() }
@@ -400,5 +527,11 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     private companion object {
         const val POLL_INTERVAL_MS = 30_000L
+
+        /** Через сколько снова предлагать отложенное обновление. */
+        const val PROMPT_AGAIN_MS = 24 * 60 * 60 * 1000L
+
+        const val KEY_SKIP_VERSION = "update_skip_version"
+        const val KEY_SKIP_AT = "update_skip_at"
     }
 }
