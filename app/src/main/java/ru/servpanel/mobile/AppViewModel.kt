@@ -23,6 +23,9 @@ import ru.servpanel.mobile.net.PanelApiException
 import ru.servpanel.mobile.net.PanelClient
 import ru.servpanel.mobile.net.ProbeResult
 import ru.servpanel.mobile.net.ServerHealth
+import ru.servpanel.mobile.net.SshAccess
+import ru.servpanel.mobile.net.SshProbeResult
+import ru.servpanel.mobile.net.SshTunnels
 import java.io.File
 
 sealed interface Screen {
@@ -209,9 +212,19 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
         if (previous == null ||
             previous.url != profile.url ||
-            previous.allowInsecure != profile.allowInsecure
+            previous.panelPort != profile.panelPort ||
+            previous.allowInsecure != profile.allowInsecure ||
+            previous.sshTunnel != profile.sshTunnel ||
+            previous.sshHost != profile.sshHost ||
+            previous.sshPort != profile.sshPort ||
+            previous.sshUser != profile.sshUser ||
+            previous.sshKey != profile.sshKey ||
+            previous.sshPassphrase != profile.sshPassphrase ||
+            previous.sshHostKey != profile.sshHostKey ||
+            previous.remotePanelPort != profile.remotePanelPort
         ) {
             clients.remove(profile.id)?.clearSession()
+            SshTunnels.invalidate(profile.id)
             auth = auth - profile.id
         }
 
@@ -224,6 +237,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     fun deleteServer(profile: ServerProfile) {
         clients.remove(profile.id)?.clearSession()
+        SshTunnels.invalidate(profile.id)
         auth = auth - profile.id
         health = health - profile.id
 
@@ -357,7 +371,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     // Панель за nginx: HTTP отвечает 301 на HTTPS, OkHttp
                     // превращает POST в GET, и /api/login отдаёт 404.
                     // Пробуем тот же адрес по HTTPS и запоминаем его.
-                    val secure = server.httpsVariant
+                    val secure = if (server.sshTunnel) null else server.httpsVariant
                     if (e.status != 404 || secure == null) throw e
                     val secureClient = PanelClient(secure, getApplication())
                     val upgraded = secureClient.login(username, password, code)
@@ -422,6 +436,13 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             val result = api.probe(raw, allowInsecure)
             onResult(result)
+        }
+    }
+
+    /** Проверка SSH-доступа из редактора: ключ, отпечаток и панель через туннель. */
+    fun probeSsh(server: ServerProfile, onResult: (Result<SshProbeResult>) -> Unit) {
+        viewModelScope.launch {
+            onResult(runCatching { SshAccess.probe(server) })
         }
     }
 

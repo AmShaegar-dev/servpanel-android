@@ -64,9 +64,11 @@ import kotlinx.coroutines.launch
 import ru.servpanel.mobile.AppViewModel
 import ru.servpanel.mobile.data.ServerColors
 import ru.servpanel.mobile.data.ServerProfile
+import ru.servpanel.mobile.net.GeneratedKey
 import ru.servpanel.mobile.net.HostInfo
 import ru.servpanel.mobile.net.InstallEvent
 import ru.servpanel.mobile.net.InstallRequest
+import ru.servpanel.mobile.net.SshAccess
 import ru.servpanel.mobile.net.SshInstaller
 import ru.servpanel.mobile.net.SshTarget
 import ru.servpanel.mobile.ui.theme.PanelAccent
@@ -113,6 +115,10 @@ fun InstallPanelScreen(
     var probing by remember { mutableStateOf(false) }
     var probeError by remember { mutableStateOf<String?>(null) }
     var hostInfo by remember { mutableStateOf<HostInfo?>(null) }
+
+    var sshOnly by remember { mutableStateOf(false) }
+    var generatedKey by remember { mutableStateOf<GeneratedKey?>(null) }
+    var sshReady by remember { mutableStateOf(false) }
 
     var running by remember { mutableStateOf(false) }
     var job by remember { mutableStateOf<Job?>(null) }
@@ -168,17 +174,25 @@ fun InstallPanelScreen(
     fun startInstall(info: HostInfo) {
         installError = null
         resultUrl = null
+        sshReady = false
         log = emptyList()
         stage = "Подключаемся…"
         progress = 0.02f
         running = true
+        // Ключ создаётся до установки: на сервер уйдёт только публичная часть.
+        val key = if (sshOnly) SshAccess.generateKey() else null
+        generatedKey = key
         val request = InstallRequest(
             target = target(),
             fingerprint = info.fingerprint,
             accessType = accessType,
             domain = domain.trim(),
             panelPort = panelPortValue ?: 3000,
-            adminPassword = adminPassword
+            adminPassword = adminPassword,
+            sshOnly = sshOnly,
+            sshKey = key?.privateKey.orEmpty(),
+            sshPublicKey = key?.publicKey.orEmpty(),
+            sshUser = SshAccess.DEFAULT_USER
         )
         job = scope.launch {
             try {
@@ -193,6 +207,7 @@ fun InstallPanelScreen(
 
                         is InstallEvent.Done -> {
                             resultUrl = event.panelUrl
+                            sshReady = event.sshReady
                             progress = 1f
                         }
                     }
@@ -249,21 +264,48 @@ fun InstallPanelScreen(
                 url != null -> InstallDoneCard(
                     url = url,
                     adminPassword = adminPassword,
+                    sshOnly = sshReady,
                     onCopyPassword = {
                         copyToClipboard(context, adminPassword, "Пароль скопирован")
                     },
                     onOpen = {
-                        val profile = ServerProfile(
-                            id = UUID.randomUUID().toString(),
-                            name = if (accessType == 2) domain.trim() else host.trim(),
-                            url = url,
-                            color = ServerColors.next(vm.servers),
-                            createdAt = System.currentTimeMillis()
-                        )
+                        val hostValue = host.trim()
+                            .removePrefix("http://")
+                            .removePrefix("https://")
+                            .substringBefore("/")
+                        val key = generatedKey
+                        val profile = if (sshReady && key != null) {
+                            ServerProfile(
+                                id = UUID.randomUUID().toString(),
+                                name = hostValue,
+                                // Для режима SSH адрес панели — только подпись;
+                                // реальный трафик идёт через локальный конец туннеля.
+                                url = "http://$hostValue",
+                                color = ServerColors.next(vm.servers),
+                                createdAt = System.currentTimeMillis(),
+                                sshTunnel = true,
+                                sshHost = hostValue,
+                                sshPort = sshPortValue ?: 22,
+                                sshUser = SshAccess.DEFAULT_USER,
+                                sshKey = key.privateKey,
+                                sshHostKey = hostInfo?.fingerprint.orEmpty(),
+                                remotePanelPort = if (accessType == 2) 3000 else panelPortValue ?: 3000
+                            )
+                        } else {
+                            ServerProfile(
+                                id = UUID.randomUUID().toString(),
+                                name = if (accessType == 2) domain.trim() else hostValue,
+                                url = url,
+                                color = ServerColors.next(vm.servers),
+                                createdAt = System.currentTimeMillis()
+                            )
+                        }
                         onInstalled(profile)
                     },
                     onAgain = {
                         resultUrl = null
+                        sshReady = false
+                        generatedKey = null
                         log = emptyList()
                         stage = ""
                         progress = 0f
@@ -469,6 +511,23 @@ fun InstallPanelScreen(
                                 icon = Icons.Filled.ContentCopy
                             )
                         }
+                    }
+
+                    Spacer(Modifier.height(14.dp))
+
+                    PanelCard {
+                        SettingSwitch(
+                            title = "Доступ только из приложения",
+                            subtitle = if (accessType == 2) {
+                                "После установки панель закроется на 127.0.0.1:3000 и будет " +
+                                    "доступна по SSH-ключу. Nginx на 443 останется."
+                            } else {
+                                "После установки панель закроется на 127.0.0.1:${panelPort.ifBlank { "3000" }}: " +
+                                    "порт в UFW закрывается, доступ — по SSH-ключу из приложения."
+                            },
+                            checked = sshOnly,
+                            onCheckedChange = { sshOnly = it }
+                        )
                     }
 
                     Spacer(Modifier.height(14.dp))
@@ -744,6 +803,7 @@ private fun InstallLogCard(
 private fun InstallDoneCard(
     url: String,
     adminPassword: String,
+    sshOnly: Boolean,
     onCopyPassword: () -> Unit,
     onOpen: () -> Unit,
     onAgain: () -> Unit
@@ -761,7 +821,18 @@ private fun InstallDoneCard(
                 Badge("готово", PanelGreen)
             }
             Spacer(Modifier.height(12.dp))
-            InfoRow("Адрес", url, mono = true)
+            if (sshOnly) {
+                InfoRow("Доступ", "только по SSH-ключу", mono = true)
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    "Порт панели закрыт в UFW, панель слушает 127.0.0.1. " +
+                        "Приложение подключится само — ключ уже сохранён на телефоне.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = PanelMuted
+                )
+            } else {
+                InfoRow("Адрес", url, mono = true)
+            }
             Spacer(Modifier.height(6.dp))
             Text(
                 "Логин",

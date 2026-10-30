@@ -21,7 +21,22 @@ data class ServerProfile(
     /** Порт metrics-сервера панели (`PANEL_METRICS_PORT`); 0 — метрики через API. */
     val metricsPort: Int = 0,
     /** Bearer-токен metrics-сервера, если он включён на панели. */
-    val metricsToken: String = ""
+    val metricsToken: String = "",
+    // --- Доступ через SSH-туннель -------------------------------------
+    /** Ходить в панель не напрямую, а через SSH-туннель до loopback сервера. */
+    val sshTunnel: Boolean = false,
+    /** Хост SSH (обычно тот же, что и у панели). */
+    val sshHost: String = "",
+    val sshPort: Int = 22,
+    /** Отдельный пользователь без шелла, только для проброса порта. */
+    val sshUser: String = "servpanel-app",
+    /** Приватный ключ в PEM/OpenSSH; хранится в зашифрованном JSON профиля. */
+    val sshKey: String = "",
+    val sshPassphrase: String = "",
+    /** Закреплённый отпечаток ключа хоста в формате SHA256:… */
+    val sshHostKey: String = "",
+    /** Порт панели на самом сервере (127.0.0.1), а не внешний. */
+    val remotePanelPort: Int = 3000
 ) {
     /** Адрес панели с учётом поля «Порт панели». */
     val apiUrl: String
@@ -31,6 +46,14 @@ data class ServerProfile(
             val parsed = base.toHttpUrlOrNull() ?: return base
             return parsed.newBuilder().port(panelPort).build().toString().trimEnd('/')
         }
+
+    /** Копия профиля с адресом локального конца туннеля. */
+    fun viaLocalPort(port: Int): ServerProfile =
+        copy(url = "http://127.0.0.1:$port", panelPort = 0, metricsPort = 0, allowInsecure = false)
+
+    /** Короткая подпись режима доступа для карточки сервера. */
+    val accessLabel: String
+        get() = if (sshTunnel) "SSH" else ""
 
     /** Адрес metrics-сервера; null, если отдельный порт не задан. */
     val metricsUrl: String?
@@ -48,6 +71,12 @@ data class ServerProfile(
     /** Хост и порт для подписей в интерфейсе. */
     val displayHost: String
         get() {
+            if (sshTunnel) {
+                val host = sshHost.ifBlank {
+                    url.toHttpUrlOrNull()?.host ?: url
+                }
+                return if (sshPort == 22) host else "$host:$sshPort"
+            }
             val parsed = apiUrl.toHttpUrlOrNull() ?: return apiUrl
             val defaultPort = if (parsed.scheme == "https") 443 else 80
             return if (parsed.port == defaultPort) parsed.host else "${parsed.host}:${parsed.port}"
@@ -79,6 +108,14 @@ data class ServerProfile(
         put("panelPort", panelPort)
         put("metricsPort", metricsPort)
         put("metricsToken", metricsToken)
+        put("sshTunnel", sshTunnel)
+        put("sshHost", sshHost)
+        put("sshPort", sshPort)
+        put("sshUser", sshUser)
+        put("sshKey", sshKey)
+        put("sshPassphrase", sshPassphrase)
+        put("sshHostKey", sshHostKey)
+        put("remotePanelPort", remotePanelPort)
     }
 
     companion object {
@@ -94,7 +131,15 @@ data class ServerProfile(
                 createdAt = o.optLong("createdAt", 0L),
                 panelPort = o.optInt("panelPort", 0).takeIf { it in 1..65535 } ?: 0,
                 metricsPort = o.optInt("metricsPort", 0).takeIf { it in 1..65535 } ?: 0,
-                metricsToken = o.optString("metricsToken").orEmpty()
+                metricsToken = o.optString("metricsToken").orEmpty(),
+                sshTunnel = o.optBoolean("sshTunnel", false),
+                sshHost = o.optString("sshHost").orEmpty(),
+                sshPort = o.optInt("sshPort", 22).takeIf { it in 1..65535 } ?: 22,
+                sshUser = o.optString("sshUser").ifBlank { "servpanel-app" },
+                sshKey = o.optString("sshKey").orEmpty(),
+                sshPassphrase = o.optString("sshPassphrase").orEmpty(),
+                sshHostKey = o.optString("sshHostKey").orEmpty(),
+                remotePanelPort = o.optInt("remotePanelPort", 3000).takeIf { it in 1..65535 } ?: 3000
             )
         }
     }

@@ -594,7 +594,13 @@ private fun androidx.compose.foundation.lazy.LazyListScope.cascadeItems(
                 onDismissRequest = { confirmRemove = false },
                 containerColor = PanelElevated,
                 title = { Text("Удалить каскад?") },
-                text = { Text("Маршруты RU → EU будут сняты. Туннель awg1 и конфиг EU-сервера будут удалены.") },
+                text = {
+                    Text(
+                        "Маршруты RU → EU будут сняты, туннель awg1 и клиент ru_host " +
+                            "удалены на этом сервере. Вторую сторону почистите из её панели " +
+                            "(или в 3.0 панель сделает это сама, если указать её адрес и пароль)."
+                    )
+                },
                 confirmButton = {
                     TextButton(onClick = {
                         scope.launch {

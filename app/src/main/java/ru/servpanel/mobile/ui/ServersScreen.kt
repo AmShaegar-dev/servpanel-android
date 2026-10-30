@@ -484,17 +484,38 @@ private fun ServerCard(
                     ServerAvatar(server.name, server.color, 44.dp)
                     Spacer(Modifier.width(12.dp))
                     Column(Modifier.weight(1f)) {
-                        Text(
-                            text = server.name,
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.SemiBold,
-                            color = PanelText,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                text = server.name,
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.SemiBold,
+                                color = PanelText,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.weight(1f, fill = false)
+                            )
+                            if (server.sshTunnel) {
+                                Spacer(Modifier.width(6.dp))
+                                Surface(
+                                    shape = RoundedCornerShape(6.dp),
+                                    color = PanelAccent.copy(alpha = 0.14f)
+                                ) {
+                                    Text(
+                                        "SSH",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = PanelAccent,
+                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                    )
+                                }
+                            }
+                        }
                         Spacer(Modifier.height(2.dp))
                         Text(
-                            text = server.displayHost,
+                            text = if (server.sshTunnel) {
+                                "через SSH · ${server.displayHost}"
+                            } else {
+                                server.displayHost
+                            },
                             style = MaterialTheme.typography.bodySmall,
                             color = PanelMuted,
                             maxLines = 1,

@@ -28,6 +28,19 @@ class PanelApi(private val context: Context) {
 
     suspend fun check(server: ServerProfile): ServerHealth = withContext(Dispatchers.IO) {
         val now = System.currentTimeMillis()
+        // В режиме SSH сначала поднимаем туннель: иначе в «Пинг» попадёт
+        // рукопожатие SSH (0,3–1 с), хотя сама панель отвечает быстро.
+        if (server.sshTunnel) {
+            try {
+                SshTunnels.ensure(server)
+            } catch (e: Exception) {
+                return@withContext ServerHealth(
+                    online = false,
+                    error = e.message ?: "Не удалось открыть SSH-туннель",
+                    checkedAt = now
+                )
+            }
+        }
         val client = PanelClient(server, context)
         val started = System.currentTimeMillis()
 
@@ -172,7 +185,22 @@ class PanelApi(private val context: Context) {
         client: PanelClient,
         server: ServerProfile
     ): Timed<MetricsSnapshot?> {
-        if (server.metricsPort <= 0) return Timed(null, 0L)
+        // Отдельный порт метрик: если он не задан, панель отдаёт тот же снимок
+        // через /api/metrics (обычная сессия). Так порт 9101 можно закрыть.
+        if (server.metricsPort <= 0 || server.sshTunnel) {
+            val key = "api:${server.id}"
+            if (apiMetricsUnavailable.contains(key)) return Timed(null, 0L)
+            val started = System.currentTimeMillis()
+            val result = runCatching { client.metrics() }
+            val value = result.getOrNull()
+            val error = result.exceptionOrNull()
+            if (value == null && error is PanelApiException && error.status == 404) {
+                // Панель старше 3.0: запоминаем и больше не спрашиваем.
+                apiMetricsUnavailable.add(key)
+            }
+            return Timed(value, System.currentTimeMillis() - started)
+        }
+
         val key = "${server.id}:${server.metricsPort}"
         val until = metricsCooldown[key]
         if (until != null) {
@@ -289,6 +317,9 @@ class PanelApi(private val context: Context) {
 
         /** Ключ — `id сервера:порт метрик`; проверки идут параллельно. */
         val metricsCooldown = java.util.concurrent.ConcurrentHashMap<String, Long>()
+
+        /** Серверы, где /api/metrics ещё не появился (панель до 3.0). */
+        val apiMetricsUnavailable = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
     }
 }
 

@@ -105,7 +105,8 @@ fun AppRoot(vm: AppViewModel) {
                 onBack = vm::closeEditor,
                 onSave = vm::saveServer,
                 onDelete = vm::deleteServer,
-                onProbe = vm::probe
+                onProbe = vm::probe,
+                onProbeSsh = vm::probeSsh
             )
         }
     }

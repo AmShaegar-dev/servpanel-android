@@ -90,7 +90,6 @@ class PanelClient(
 ) {
 
     private val cookieJar = PersistentCookieJar(context, server.id)
-    private val baseUrl: String = server.apiUrl.trimEnd('/')
 
     private val client: OkHttpClient = HttpClients.forServer(server.allowInsecure)
         .newBuilder()
@@ -103,8 +102,20 @@ class PanelClient(
     // Базовые запросы
     // ------------------------------------------------------------------
 
-    private fun urlFor(path: String, query: Map<String, String>): HttpUrl? {
-        val base = (baseUrl + path).toHttpUrlOrNull() ?: return null
+    /**
+     * Адрес, по которому реально доступна панель.
+     *
+     * В режиме SSH это локальный конец туннеля: панель на сервере слушает
+     * только 127.0.0.1, и снаружи её порт закрыт.
+     */
+    private suspend fun baseUrl(): String {
+        if (!server.sshTunnel) return server.apiUrl.trimEnd('/')
+        val port = SshTunnels.ensure(server)
+        return "http://127.0.0.1:$port"
+    }
+
+    private suspend fun urlFor(path: String, query: Map<String, String>): HttpUrl? {
+        val base = (baseUrl() + path).toHttpUrlOrNull() ?: return null
         if (query.isEmpty()) return base
         val builder = base.newBuilder()
         query.forEach { (k, v) -> builder.addQueryParameter(k, v) }
@@ -117,6 +128,30 @@ class PanelClient(
         query: Map<String, String> = emptyMap(),
         body: RequestBody? = null,
         timeoutSeconds: Long = 45
+    ): Response = withContext(Dispatchers.IO) {
+        try {
+            executeOnce(method, path, query, body, timeoutSeconds)
+        } catch (e: IOException) {
+            // Туннель мог пережить смену сети или Doze: переоткрываем сессию
+            // и повторяем запрос один раз. Снаружи это выглядит как обычный
+            // ответ, без «панель не отвечает».
+            if (!server.sshTunnel) throw mapIoException(e)
+            SshTunnels.invalidate(server.id)
+            runCatching { SshTunnels.ensure(server) }
+            try {
+                executeOnce(method, path, query, body, timeoutSeconds)
+            } catch (e2: IOException) {
+                throw mapIoException(e2)
+            }
+        }
+    }
+
+    private suspend fun executeOnce(
+        method: String,
+        path: String,
+        query: Map<String, String>,
+        body: RequestBody?,
+        timeoutSeconds: Long
     ): Response = withContext(Dispatchers.IO) {
         val url = urlFor(path, query)
             ?: throw PanelApiException(0, "Некорректный адрес панели")
@@ -139,22 +174,26 @@ class PanelClient(
             .callTimeout(timeoutSeconds, TimeUnit.SECONDS)
             .readTimeout(timeoutSeconds, TimeUnit.SECONDS)
             .build()
-        try {
-            callClient.newCall(request).execute()
-        } catch (e: UnknownHostException) {
-            throw PanelApiException(0, "Сервер не найден. Проверьте адрес панели.")
-        } catch (e: ConnectException) {
-            throw PanelApiException(0, "Не удалось подключиться к панели.")
-        } catch (e: SocketTimeoutException) {
-            throw PanelApiException(0, "Панель не ответила вовремя.")
-        } catch (e: SSLException) {
-            throw PanelApiException(
+        callClient.newCall(request).execute()
+    }
+
+    private fun mapIoException(e: IOException): PanelApiException = when (e) {
+        is UnknownHostException ->
+            PanelApiException(0, "Сервер не найден. Проверьте адрес панели.")
+
+        is ConnectException ->
+            PanelApiException(0, "Не удалось подключиться к панели.")
+
+        is SocketTimeoutException ->
+            PanelApiException(0, "Панель не ответила вовремя.")
+
+        is SSLException ->
+            PanelApiException(
                 0,
                 "Ошибка TLS-сертификата. Если сертификат самоподписанный — включите это в настройках сервера."
             )
-        } catch (e: IOException) {
-            throw PanelApiException(0, e.message ?: "Ошибка сети")
-        }
+
+        else -> PanelApiException(0, e.message ?: "Ошибка сети")
     }
 
     private fun errorFrom(status: Int, text: String): PanelApiException {
@@ -287,7 +326,22 @@ class PanelClient(
      * Идёт не на порт API, а на `PANEL_METRICS_PORT`, поэтому не использует
      * cookie-сессию: доступ определяется портом и Bearer-токеном.
      */
-    suspend fun metrics(): MetricsSnapshot = withContext(Dispatchers.IO) {
+    /**
+     * Снимок метрик.
+     *
+     * Если отдельный порт метрик не задан (или панель доступна только через
+     * SSH), берём `/api/metrics` — тот же снимок, но по обычной сессии.
+     * null означает, что панель такого маршрута не знает (версии до 3.0).
+     */
+    suspend fun metrics(): MetricsSnapshot? = withContext(Dispatchers.IO) {
+        if (server.metricsPort <= 0 || server.sshTunnel) {
+            return@withContext try {
+                MetricsSnapshot.from(json("GET", "/api/metrics"))
+            } catch (e: PanelApiException) {
+                if (e.status == 404) null else throw e
+            }
+        }
+
         val url = server.metricsUrl
             ?: throw PanelApiException(0, "Порт метрик не задан")
         val request = Request.Builder()
@@ -516,7 +570,13 @@ class PanelClient(
     }
 
     suspend fun cascadeRemove() {
-        json("POST", "/api/cascade/remove")
+        // С 3.0 удаление называется cleanup: панель снимает свою сторону,
+        // а вторую чистит по SSH, если передать её адрес и пароль.
+        json(
+            "POST", "/api/cascade/cleanup",
+            body = JSONObject(),
+            timeoutSeconds = 180
+        )
     }
 
     suspend fun toolsStatus(): ToolsStatus = ToolsStatus.from(json("GET", "/api/tools/status"))

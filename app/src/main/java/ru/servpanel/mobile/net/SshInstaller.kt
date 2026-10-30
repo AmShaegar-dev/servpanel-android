@@ -48,13 +48,20 @@ data class InstallRequest(
     val accessType: Int,
     val domain: String,
     val panelPort: Int,
-    val adminPassword: String
+    val adminPassword: String,
+    /** После установки закрыть панель на loopback и оставить только SSH-туннель. */
+    val sshOnly: Boolean = false,
+    /** Приватный ключ, сгенерированный на телефоне (в память, не на сервер). */
+    val sshKey: String = "",
+    /** Публичная часть того же ключа — её и ставим в authorized_keys. */
+    val sshPublicKey: String = "",
+    val sshUser: String = SshAccess.DEFAULT_USER
 )
 
 sealed interface InstallEvent {
     data class Stage(val text: String, val progress: Float) : InstallEvent
     data class Log(val line: String) : InstallEvent
-    data class Done(val panelUrl: String) : InstallEvent
+    data class Done(val panelUrl: String, val sshReady: Boolean = false) : InstallEvent
 }
 
 /**
@@ -174,13 +181,80 @@ class SshInstaller {
                     )
                 }
 
+                var sshReady = false
+                if (request.sshOnly) {
+                    emit(InstallEvent.Stage("Настраиваем доступ по SSH…", 0.9f))
+                    sshReady = provisionSshAccess(session, request) { line ->
+                        emit(InstallEvent.Log(line))
+                    }
+                }
+
                 emit(InstallEvent.Stage("Готово", 1f))
-                emit(InstallEvent.Done(panelUrl ?: expectedUrl(request)))
+                emit(InstallEvent.Done(panelUrl ?: expectedUrl(request), sshReady))
             }
         } finally {
             session.disconnect()
         }
     }.flowOn(Dispatchers.IO)
+
+    // ------------------------------------------------------------------
+    // Доступ по SSH после установки
+    // ------------------------------------------------------------------
+
+    /**
+     * Создаёт отдельного пользователя с ключом, переводит панель на loopback
+     * и закрывает внешний порт. Проверяет туннель этой же сессией; при сбое
+     * возвращает панель наружу, чтобы не потерять доступ.
+     */
+    private suspend fun provisionSshAccess(
+        session: Session,
+        request: InstallRequest,
+        log: suspend (String) -> Unit
+    ): Boolean {
+        if (request.sshPublicKey.isBlank()) {
+            throw IllegalStateException("Не сгенерирован SSH-ключ для доступа")
+        }
+        val internal = if (request.accessType == 2) 3000 else request.panelPort
+        val publicPort = if (request.accessType == 2) 443 else request.panelPort
+        val line = SshAccess.authorizedKeyLine(request.sshPublicKey, internal)
+
+        log("Создаём пользователя ${request.sshUser} (без шелла) и ставим ключ…")
+        val script = SshAccess.provisionScript(
+            user = request.sshUser,
+            authorizedKey = line,
+            remotePort = internal,
+            bindLoopback = true,
+            publicPort = publicPort
+        )
+        val out = runCommand(session, "bash -s <<'SERVpanel_EOF'\n$script\nSERVpanel_EOF")
+        if (!out.contains("SERVpanel_ACCESS_OK")) {
+            log(out.trim().takeLast(400))
+            throw IllegalStateException(
+                "Не удалось настроить SSH-доступ. Панель оставлена доступной как раньше."
+            )
+        }
+
+        log("Проверяем панель через туннель…")
+        val port = SshAccess.freeLocalPort()
+        session.setPortForwardingL("127.0.0.1", port, "127.0.0.1", internal)
+        if (!SshAccess.panelAnswers(port)) {
+            log("Туннель не открылся — возвращаем панель наружу.")
+            val rollback = SshAccess.provisionScript(
+                user = request.sshUser,
+                authorizedKey = line,
+                remotePort = internal,
+                bindLoopback = false,
+                publicPort = publicPort,
+                rollback = true
+            )
+            runCommand(session, "bash -s <<'SERVpanel_EOF'\n$rollback\nSERVpanel_EOF")
+            throw IllegalStateException(
+                "Панель не ответила через SSH-туннель, поэтому внешний доступ оставлен."
+            )
+        }
+        log("Готово: панель слушает только 127.0.0.1:$internal, порт $publicPort закрыт.")
+        return true
+    }
 
     // ------------------------------------------------------------------
     // SSH
@@ -208,6 +282,10 @@ class SshInstaller {
     private fun describe(e: Exception, target: SshTarget): String {
         val text = e.message.orEmpty()
         return when {
+            text.contains("Algorithm negotiation fail", ignoreCase = true) ->
+                "Сервер предлагает только ed25519-ключ хоста, который установщик " +
+                    "не поддерживает. Выполните: ssh-keygen -A && systemctl reload ssh"
+
             text.contains("HostKey has been changed", ignoreCase = true) ->
                 "Отпечаток ключа сервера изменился. Возможно, это другой сервер " +
                     "или ключ перевыпущен. Проверьте отпечаток заново."
