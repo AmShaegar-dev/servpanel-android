@@ -57,6 +57,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import ru.servpanel.mobile.AppViewModel
+import ru.servpanel.mobile.AuthStatus
 import ru.servpanel.mobile.WorkspaceTab
 import ru.servpanel.mobile.data.CascadeStatus
 import ru.servpanel.mobile.data.ClientInfo
@@ -208,6 +209,13 @@ fun OverviewScreen(vm: AppViewModel, server: ServerProfile) {
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
         item { StatusOverviewCard(current, server) }
+
+        if (!server.sshTunnel &&
+            vm.authOf(server.id).status == AuthStatus.LoggedIn &&
+            vm.authOf(server.id).isAdmin
+        ) {
+            item { SshNudgeCard(vm, server) }
+        }
 
         item {
             PanelCard {
@@ -368,6 +376,58 @@ fun OverviewScreen(vm: AppViewModel, server: ServerProfile) {
                 onOpen = { vm.selectTab(WorkspaceTab.Security) }
             )
         }
+    }
+}
+
+@Composable
+private fun SshNudgeCard(vm: AppViewModel, server: ServerProfile) {
+    val state = vm.sshSetup
+
+    PanelCard {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Surface(
+                shape = RoundedCornerShape(12.dp),
+                color = PanelAccent.copy(alpha = 0.12f),
+                modifier = Modifier.size(38.dp)
+            ) {
+                Icon(
+                    Icons.Filled.Shield,
+                    contentDescription = null,
+                    tint = PanelAccent,
+                    modifier = Modifier.padding(8.dp)
+                )
+            }
+            Spacer(Modifier.width(12.dp))
+            Column(Modifier.weight(1f)) {
+                Text(
+                    text = "Доступ по SSH через панель",
+                    style = MaterialTheme.typography.bodyLarge,
+                    fontWeight = FontWeight.SemiBold,
+                    color = PanelText
+                )
+                Text(
+                    text = when {
+                        state.running -> state.step.ifBlank { "Настраиваем…" }
+                        state.error != null -> state.error
+                        else -> "Панель сама поставит ключ и закроет порт — " +
+                            "без команд на сервере."
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (state.error != null) PanelRed else PanelMuted
+                )
+            }
+        }
+
+        Spacer(Modifier.height(12.dp))
+
+        PanelButton(
+            text = if (state.running) "Настраиваем…" else "Настроить через панель",
+            onClick = { vm.setupSshAccess(server) },
+            enabled = !state.running,
+            loading = state.running,
+            modifier = Modifier.fillMaxWidth(),
+            icon = Icons.Filled.Shield
+        )
     }
 }
 

@@ -92,6 +92,7 @@ fun EditorScreen(
     existing: ServerProfile?,
     servers: List<ServerProfile>,
     sshSetup: SshSetupState,
+    panelLoggedIn: Boolean,
     onBack: () -> Unit,
     onSave: (ServerProfile) -> Unit,
     onDelete: (ServerProfile) -> Unit,
@@ -226,19 +227,55 @@ fun EditorScreen(
 
             Spacer(Modifier.height(12.dp))
 
-            SettingSwitch(
-                title = "Доступ через SSH-туннель",
-                subtitle = "Панель слушает только 127.0.0.1, снаружи порт закрыт. " +
-                    "Приложение открывает туннель отдельным ключом.",
-                checked = sshTunnel,
-                onCheckedChange = {
-                    sshTunnel = it
-                    probeResult = null
-                    sshResult = null
+            if (existing != null) {
+                SettingSwitch(
+                    title = "Доступ через SSH-туннель",
+                    subtitle = "Панель слушает только 127.0.0.1, снаружи порт закрыт. " +
+                        "Приложение открывает туннель отдельным ключом.",
+                    checked = sshTunnel,
+                    onCheckedChange = {
+                        sshTunnel = it
+                        probeResult = null
+                        sshResult = null
+                        // Подставляем адрес и порт из профиля, чтобы не вводить заново.
+                        if (it && sshHost.isBlank()) {
+                            sshHost = PanelUrl.normalize(url)
+                                ?.substringAfter("://")
+                                ?.substringBefore("/")
+                                .orEmpty()
+                        }
+                        if (it && remotePanelPort == "3000" && panelPortValue != null) {
+                            remotePanelPort = panelPortValue.toString()
+                        }
+                    }
+                )
+            } else {
+                Surface(
+                    shape = RoundedCornerShape(16.dp),
+                    color = PanelSurface,
+                    border = BorderStroke(1.dp, PanelAccent.copy(alpha = 0.3f)),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(Modifier.padding(14.dp)) {
+                        Text(
+                            text = "Доступ по SSH — одной кнопкой",
+                            style = MaterialTheme.typography.bodyLarge,
+                            fontWeight = FontWeight.SemiBold,
+                            color = PanelText
+                        )
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            text = "Сохраните сервер и войдите в панель. После этого доступ " +
+                                "включится одной кнопкой: ключ выдаст сама панель, команды " +
+                                "на сервере не нужны.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = PanelMuted
+                        )
+                    }
                 }
-            )
+            }
 
-            if (sshTunnel) {
+            if (existing != null && sshTunnel) {
                 Spacer(Modifier.height(8.dp))
                 SshAccessFields(
                     host = sshHost,
@@ -278,7 +315,11 @@ fun EditorScreen(
                         SshAccess.authorizedKeyLine(it, remotePanelPortValue ?: 3000)
                     }.orEmpty(),
                     userForKeys = sshUser.ifBlank { SshAccess.DEFAULT_USER },
-                    remotePortForKeys = remotePanelPortValue ?: 3000
+                    remotePortForKeys = remotePanelPortValue ?: 3000,
+                    hasSavedProfile = existing != null,
+                    panelLoggedIn = panelLoggedIn,
+                    setupState = sshSetup,
+                    onSetupSsh = onSetupSsh
                 )
             } else {
                 Spacer(Modifier.height(12.dp))
@@ -456,7 +497,16 @@ fun EditorScreen(
 
             if (!sshTunnel && existing != null) {
                 Spacer(Modifier.height(16.dp))
-                SshSetupCard(state = sshSetup, onStart = onSetupSsh)
+                if (panelLoggedIn) {
+                    SshSetupCard(state = sshSetup, onStart = onSetupSsh)
+                } else {
+                    Text(
+                        text = "Войдите в панель — и доступ по SSH включится одной " +
+                            "кнопкой, без команд на сервере.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = PanelMuted
+                    )
+                }
             }
 
             if (!sshTunnel) {
@@ -770,9 +820,86 @@ private fun SshAccessFields(
     publicKey: String?,
     authorizedKey: String,
     userForKeys: String,
-    remotePortForKeys: Int
+    remotePortForKeys: Int,
+    hasSavedProfile: Boolean,
+    panelLoggedIn: Boolean,
+    setupState: SshSetupState,
+    onSetupSsh: () -> Unit
 ) {
     val context = LocalContext.current
+    var showManual by remember { mutableStateOf(false) }
+
+    Surface(
+        shape = RoundedCornerShape(16.dp),
+        color = PanelSurface,
+        border = BorderStroke(1.dp, PanelAccent.copy(alpha = 0.35f)),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column(Modifier.padding(16.dp)) {
+            Text(
+                text = "Ключ выдаёт панель",
+                style = MaterialTheme.typography.bodyLarge,
+                fontWeight = FontWeight.SemiBold,
+                color = PanelText
+            )
+            Spacer(Modifier.height(4.dp))
+            Text(
+                text = when {
+                    !hasSavedProfile ->
+                        "Сначала сохраните сервер и войдите в панель. Потом доступ " +
+                            "включится одной кнопкой — команды на сервере не нужны."
+                    !panelLoggedIn ->
+                        "Войдите в панель (кнопка «Открыть» на карточке сервера), " +
+                            "вернитесь сюда — и доступ включится одной кнопкой."
+                    else ->
+                        "Панель сама создаст пользователя, поставит ключ и закроет " +
+                            "свой порт. Нужны только права администратора панели."
+                },
+                style = MaterialTheme.typography.bodySmall,
+                color = PanelMuted
+            )
+
+            if (hasSavedProfile && panelLoggedIn) {
+                Spacer(Modifier.height(12.dp))
+                if (setupState.running) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(16.dp),
+                            strokeWidth = 2.dp,
+                            color = PanelAccent
+                        )
+                        Spacer(Modifier.width(10.dp))
+                        Text(
+                            text = setupState.step.ifBlank { "Настраиваем…" },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = PanelText
+                        )
+                    }
+                } else {
+                    Button(
+                        onClick = onSetupSsh,
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = PanelAccent,
+                            contentColor = Color.White
+                        )
+                    ) {
+                        Text("Настроить через панель")
+                    }
+                }
+                setupState.error?.let { message ->
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        text = message,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = PanelRed
+                    )
+                }
+            }
+        }
+    }
+
+    Spacer(Modifier.height(14.dp))
 
     OutlinedTextField(
         value = host,
@@ -911,54 +1038,71 @@ private fun SshAccessFields(
         placeholder = { Text("SHA256:… — заполнится после проверки") },
         singleLine = true,
         supportingText = {
-            Text("Сверьте с `ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub` на сервере")
+            Text("Заполняется автоматически после проверки или настройки через панель")
         },
         modifier = Modifier.fillMaxWidth(),
         colors = panelFieldColors()
     )
 
     if (publicKey != null && authorizedKey.isNotBlank()) {
-        Spacer(Modifier.height(14.dp))
-        Text(
-            "Что выполнить на сервере один раз (от root)",
-            style = MaterialTheme.typography.labelMedium,
-            color = PanelMuted
-        )
-        Spacer(Modifier.height(6.dp))
-        Surface(
-            shape = RoundedCornerShape(12.dp),
-            color = PanelSurface,
-            border = BorderStroke(1.dp, PanelBorder),
+        Spacer(Modifier.height(10.dp))
+        TextButton(
+            onClick = { showManual = !showManual },
             modifier = Modifier.fillMaxWidth()
         ) {
-            Column(Modifier.padding(12.dp)) {
-                SelectionContainer {
-                    Text(
-                        text = setupCommands(userForKeys, authorizedKey, remotePortForKeys),
-                        style = MaterialTheme.typography.labelSmall.copy(
-                            fontFamily = FontFamily.Monospace
-                        ),
-                        color = PanelText
-                    )
+            Text(
+                text = if (showManual) {
+                    "Скрыть ручную настройку"
+                } else {
+                    "Ручная настройка (если панель старая)"
+                },
+                color = PanelMuted,
+                style = MaterialTheme.typography.bodySmall
+            )
+        }
+
+        if (showManual) {
+            Text(
+                "Что выполнить на сервере один раз (от root)",
+                style = MaterialTheme.typography.labelMedium,
+                color = PanelMuted
+            )
+            Spacer(Modifier.height(6.dp))
+            Surface(
+                shape = RoundedCornerShape(12.dp),
+                color = PanelSurface,
+                border = BorderStroke(1.dp, PanelBorder),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(Modifier.padding(12.dp)) {
+                    SelectionContainer {
+                        Text(
+                            text = setupCommands(userForKeys, authorizedKey, remotePortForKeys),
+                            style = MaterialTheme.typography.labelSmall.copy(
+                                fontFamily = FontFamily.Monospace
+                            ),
+                            color = PanelText
+                        )
+                    }
                 }
             }
-        }
-        Spacer(Modifier.height(8.dp))
-        OutlinedButton(
-            onClick = {
-                copyToClipboard(
-                    context,
-                    setupCommands(userForKeys, authorizedKey, remotePortForKeys),
-                    "Команды скопированы"
-                )
-            },
-            modifier = Modifier.fillMaxWidth(),
-            border = BorderStroke(1.dp, PanelBorder),
-            colors = ButtonDefaults.outlinedButtonColors(contentColor = PanelAccent)
-        ) {
-            Icon(Icons.Filled.Check, contentDescription = null, modifier = Modifier.size(16.dp))
-            Spacer(Modifier.width(8.dp))
-            Text("Скопировать команды")
+            Spacer(Modifier.height(8.dp))
+            OutlinedButton(
+                onClick = {
+                    copyToClipboard(
+                        context,
+                        setupCommands(userForKeys, authorizedKey, remotePortForKeys),
+                        "Команды скопированы"
+                    )
+                },
+                modifier = Modifier.fillMaxWidth(),
+                border = BorderStroke(1.dp, PanelBorder),
+                colors = ButtonDefaults.outlinedButtonColors(contentColor = PanelAccent)
+            ) {
+                Icon(Icons.Filled.Check, contentDescription = null, modifier = Modifier.size(16.dp))
+                Spacer(Modifier.width(8.dp))
+                Text("Скопировать команды")
+            }
         }
     }
 }

@@ -103,6 +103,8 @@ fun AppRoot(vm: AppViewModel) {
                 existing = existing,
                 servers = vm.servers,
                 sshSetup = vm.sshSetup,
+                panelLoggedIn = existing != null &&
+                    vm.authOf(existing.id).status == AuthStatus.LoggedIn,
                 onBack = vm::closeEditor,
                 onSave = vm::saveServer,
                 onDelete = vm::deleteServer,
