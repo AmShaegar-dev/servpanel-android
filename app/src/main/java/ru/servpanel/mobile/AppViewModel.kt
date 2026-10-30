@@ -13,6 +13,7 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import org.json.JSONArray
 import ru.servpanel.mobile.data.ServerProfile
 import ru.servpanel.mobile.data.ServersStore
 import ru.servpanel.mobile.net.AppRelease
@@ -90,6 +91,13 @@ data class AppUpdateState(
         }
 }
 
+/** Ход настройки SSH-доступа через панель (без входа на сервер). */
+data class SshSetupState(
+    val running: Boolean = false,
+    val step: String = "",
+    val error: String? = null
+)
+
 class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     private val store = ServersStore(app)
@@ -130,6 +138,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     /** Обновление приложения: проверка, загрузка APK и предложение установки. */
     var appUpdate by mutableStateOf(AppUpdateState())
+        private set
+
+    /** Настройка SSH-доступа через панель. */
+    var sshSetup by mutableStateOf(SshSetupState())
         private set
 
     private val updater = AppUpdater(app)
@@ -200,7 +212,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     // Серверы
     // ------------------------------------------------------------------
 
-    fun saveServer(profile: ServerProfile) {
+    fun saveServer(profile: ServerProfile, keepSession: Boolean = false) {
         val previous = servers.firstOrNull { it.id == profile.id }
         val list = servers.toMutableList()
         val index = list.indexOfFirst { it.id == profile.id }
@@ -223,9 +235,12 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             previous.sshHostKey != profile.sshHostKey ||
             previous.remotePanelPort != profile.remotePanelPort
         ) {
-            clients.remove(profile.id)?.clearSession()
+            val cached = clients.remove(profile.id)
+            // При переходе на туннель сессию переносим на 127.0.0.1,
+            // поэтому здесь её не выкидываем.
+            if (!keepSession) cached?.clearSession()
             SshTunnels.invalidate(profile.id)
-            auth = auth - profile.id
+            if (!keepSession) auth = auth - profile.id
         }
 
         screen = Screen.Workspace(profile.id)
@@ -443,6 +458,107 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun probeSsh(server: ServerProfile, onResult: (Result<SshProbeResult>) -> Unit) {
         viewModelScope.launch {
             onResult(runCatching { SshAccess.probe(server) })
+        }
+    }
+
+    /**
+     * Настраивает SSH-доступ целиком через панель: ключ ставит сама панель,
+     * root-пароль и вход на сервер не нужны.
+     *
+     * Порядок безопасный: сначала панель добавляет ключ (внешний доступ ещё
+     * работает), приложение проверяет туннель и только потом просит закрыть
+     * порт на loopback. Если проверка не прошла — ключ удаляется.
+     */
+    fun setupSshAccess(server: ServerProfile) {
+        val fresh = servers.firstOrNull { it.id == server.id } ?: server
+        if (fresh.sshTunnel || sshSetup.running) return
+        sshSetup = SshSetupState(running = true, step = "Создаём ключ на телефоне…")
+        viewModelScope.launch {
+            var keyAdded = false
+            var restricted = false
+            try {
+                val key = SshAccess.generateKey()
+                val status = call(fresh) { sshAccessStatus() }
+                val internalPort = status.optInt("panelPort", 3000).takeIf { it > 0 } ?: 3000
+                val sshPort = status.optInt("sshPort", 22).takeIf { it > 0 } ?: 22
+
+                sshSetup = sshSetup.copy(step = "Панель ставит ключ…")
+                val enabledJson = call(fresh) { sshAccessEnable(key.publicKey, internalPort) }
+                keyAdded = true
+
+                val hostKeys = enabledJson.optJSONArray("hostKeys") ?: JSONArray()
+                val hostKey = (0 until hostKeys.length())
+                    .mapNotNull { hostKeys.optJSONObject(it) }
+                    .firstOrNull { it.optString("type") != "ssh-ed25519" }
+                    ?.optString("fingerprint")
+                    .orEmpty()
+                if (hostKey.isBlank()) {
+                    throw IllegalStateException(
+                        "На сервере нет RSA/ECDSA ключа хоста — приложение не сможет " +
+                            "подключиться. Обновите панель и повторите."
+                    )
+                }
+
+                val draft = fresh.copy(
+                    sshTunnel = true,
+                    sshHost = fresh.host,
+                    sshPort = sshPort,
+                    sshUser = enabledJson.optString("user").ifBlank { SshAccess.DEFAULT_USER },
+                    sshKey = key.privateKey,
+                    sshPassphrase = "",
+                    sshHostKey = hostKey,
+                    remotePanelPort = internalPort,
+                    panelPort = 0,
+                    metricsPort = 0,
+                    allowInsecure = false
+                )
+
+                sshSetup = sshSetup.copy(step = "Проверяем туннель…")
+                val before = SshAccess.probe(draft)
+                if (!before.panelReachable) throw IllegalStateException(before.message)
+
+                sshSetup = sshSetup.copy(step = "Закрываем внешний порт…")
+                val restrict = call(fresh) { sshAccessRestrict() }
+                restricted = true
+                val restart = restrict.optInt("restartInMs", 1500).coerceIn(0, 5000)
+                delay(restart + 1500L)
+
+                sshSetup = sshSetup.copy(step = "Проверяем панель через туннель…")
+                var reachable = false
+                for (i in 0 until 5) {
+                    val probe = runCatching { SshAccess.probe(draft) }.getOrNull()
+                    if (probe?.panelReachable == true) {
+                        reachable = true
+                        break
+                    }
+                    delay(1500)
+                }
+                if (!reachable) {
+                    throw IllegalStateException(
+                        "Панель переведена на 127.0.0.1, но туннель не открылся. " +
+                            "Проверьте SSH-доступ к серверу и при необходимости верните " +
+                            "внешний порт командой pm2 restart awg-admin."
+                    )
+                }
+
+                sshSetup = sshSetup.copy(step = "Сохраняем профиль…")
+                // Сессия panel.sid выдана для внешнего адреса — переносим её
+                // на 127.0.0.1, чтобы не просить пароль заново.
+                clients[fresh.id]?.rebindSession("127.0.0.1", SshTunnels.portFor(draft.id))
+                saveServer(draft, keepSession = true)
+                sshSetup = SshSetupState()
+            } catch (e: Exception) {
+                // Пока панель ещё смотрит наружу, убираем ключ и откатываемся.
+                if (keyAdded && !restricted) {
+                    runCatching { call(fresh) { sshAccessDisable() } }
+                }
+                val message = when {
+                    e is PanelApiException && e.status == 404 ->
+                        "Панель не умеет выдавать ключ. Обновите её до 3.0.48 или новее."
+                    else -> e.message ?: "Не удалось настроить доступ"
+                }
+                sshSetup = SshSetupState(error = message)
+            }
         }
     }
 

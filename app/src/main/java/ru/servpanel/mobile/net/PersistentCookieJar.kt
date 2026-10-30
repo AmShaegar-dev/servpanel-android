@@ -74,6 +74,41 @@ class PersistentCookieJar(context: Context, serverId: String) : CookieJar {
         }
     }
 
+    /**
+     * Переносит cookie на другой хост: при переходе на SSH-туннель панель
+     * отвечает уже с 127.0.0.1, а сессия panel.sid была выдана для внешнего
+     * адреса. Без переноса пришлось бы входить заново.
+     */
+    fun rebindTo(host: String, port: Int) {
+        synchronized(lock) {
+            val target = "http://$host:$port"
+            val httpUrl = target.toHttpUrlOrNull() ?: return
+            val migrated = linkedMapOf<String, Pair<String, Cookie>>()
+            for (entry in cookies.values) {
+                val cookie = entry.second
+                val builder = Cookie.Builder()
+                    .name(cookie.name)
+                    .value(cookie.value)
+                    .path("/")
+                    .domain(host)
+                if (cookie.expiresAt != Long.MAX_VALUE) builder.expiresAt(cookie.expiresAt)
+                if (cookie.secure) builder.secure()
+                if (cookie.httpOnly) builder.httpOnly()
+                val rebuilt = builder.build()
+                migrated[keyOf(rebuilt)] = target to rebuilt
+            }
+            if (migrated.isEmpty()) return
+            // Проверяем, что cookie действительно уйдёт на новый адрес.
+            val usable = migrated.values.filter { (_, cookie) -> cookie.matches(httpUrl) }
+            if (usable.isEmpty()) return
+            cookies.clear()
+            for ((_, entry) in migrated) {
+                cookies[keyOf(entry.second)] = entry
+            }
+            persist()
+        }
+    }
+
     private fun keyOf(cookie: Cookie): String =
         "${cookie.name}|${cookie.domain}|${cookie.path}"
 

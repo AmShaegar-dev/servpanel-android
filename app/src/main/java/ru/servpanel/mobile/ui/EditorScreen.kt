@@ -70,6 +70,7 @@ import androidx.compose.ui.unit.dp
 import ru.servpanel.mobile.data.PanelUrl
 import ru.servpanel.mobile.data.ServerColors
 import ru.servpanel.mobile.data.ServerProfile
+import ru.servpanel.mobile.SshSetupState
 import ru.servpanel.mobile.net.ProbeResult
 import ru.servpanel.mobile.net.SshAccess
 import ru.servpanel.mobile.net.SshProbeResult
@@ -90,11 +91,13 @@ import java.util.UUID
 fun EditorScreen(
     existing: ServerProfile?,
     servers: List<ServerProfile>,
+    sshSetup: SshSetupState,
     onBack: () -> Unit,
     onSave: (ServerProfile) -> Unit,
     onDelete: (ServerProfile) -> Unit,
     onProbe: (String, Boolean, (ProbeResult) -> Unit) -> Unit,
-    onProbeSsh: (ServerProfile, (Result<SshProbeResult>) -> Unit) -> Unit
+    onProbeSsh: (ServerProfile, (Result<SshProbeResult>) -> Unit) -> Unit,
+    onSetupSsh: () -> Unit
 ) {
     BackHandler { onBack() }
 
@@ -451,6 +454,11 @@ fun EditorScreen(
                 SshProbeCard(result)
             }
 
+            if (!sshTunnel && existing != null) {
+                Spacer(Modifier.height(16.dp))
+                SshSetupCard(state = sshSetup, onStart = onSetupSsh)
+            }
+
             if (!sshTunnel) {
                 Spacer(Modifier.height(20.dp))
 
@@ -668,6 +676,70 @@ private fun ProbeResultCard(result: ProbeResult) {
                     text = "Адрес: $it",
                     style = MaterialTheme.typography.labelSmall,
                     color = PanelMuted
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun SshSetupCard(state: SshSetupState, onStart: () -> Unit) {
+    Surface(
+        shape = RoundedCornerShape(16.dp),
+        color = PanelSurface,
+        border = BorderStroke(1.dp, PanelAccent.copy(alpha = 0.35f)),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column(Modifier.padding(16.dp)) {
+            Text(
+                text = "Доступ по SSH без входа на сервер",
+                style = MaterialTheme.typography.bodyLarge,
+                fontWeight = FontWeight.SemiBold,
+                color = PanelText
+            )
+            Spacer(Modifier.height(4.dp))
+            Text(
+                text = "Панель сама создаст отдельного пользователя, поставит ключ " +
+                    "и закроет свой порт. Нужны только права администратора панели " +
+                    "(версия 3.0.48 или новее).",
+                style = MaterialTheme.typography.bodySmall,
+                color = PanelMuted
+            )
+            Spacer(Modifier.height(12.dp))
+
+            if (state.running) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(16.dp),
+                        strokeWidth = 2.dp,
+                        color = PanelAccent
+                    )
+                    Spacer(Modifier.width(10.dp))
+                    Text(
+                        text = state.step.ifBlank { "Настраиваем…" },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = PanelText
+                    )
+                }
+            } else {
+                Button(
+                    onClick = onStart,
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = PanelAccent,
+                        contentColor = Color.White
+                    )
+                ) {
+                    Text("Настроить через панель")
+                }
+            }
+
+            state.error?.let { message ->
+                Spacer(Modifier.height(10.dp))
+                Text(
+                    text = message,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = PanelRed
                 )
             }
         }

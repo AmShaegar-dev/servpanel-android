@@ -102,11 +102,13 @@ fun AppRoot(vm: AppViewModel) {
             EditorScreen(
                 existing = existing,
                 servers = vm.servers,
+                sshSetup = vm.sshSetup,
                 onBack = vm::closeEditor,
                 onSave = vm::saveServer,
                 onDelete = vm::deleteServer,
                 onProbe = vm::probe,
-                onProbeSsh = vm::probeSsh
+                onProbeSsh = vm::probeSsh,
+                onSetupSsh = { existing?.let(vm::setupSshAccess) }
             )
         }
     }

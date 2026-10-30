@@ -98,6 +98,9 @@ class PanelClient(
 
     fun clearSession() = cookieJar.clear()
 
+    /** Перенести сессию панели на локальный конец SSH-туннеля. */
+    fun rebindSession(host: String, port: Int) = cookieJar.rebindTo(host, port)
+
     // ------------------------------------------------------------------
     // Базовые запросы
     // ------------------------------------------------------------------
@@ -578,6 +581,35 @@ class PanelClient(
             timeoutSeconds = 180
         )
     }
+
+    // ------------------------------------------------------------------
+    // SSH-доступ для приложения (панель сама ставит ключ)
+    // ------------------------------------------------------------------
+
+    /** Текущее состояние SSH-доступа: пользователь, ключи, loopback, порты. */
+    suspend fun sshAccessStatus(): JSONObject = json("GET", "/api/ssh-access/status")
+
+    /** Панель ставит публичный ключ приложения отдельному пользователю. */
+    suspend fun sshAccessEnable(publicKey: String, port: Int): JSONObject =
+        json(
+            "POST", "/api/ssh-access/enable",
+            body = JSONObject()
+                .put("publicKey", publicKey)
+                .put("port", port),
+            timeoutSeconds = 60
+        )
+
+    /** Закрыть панель на 127.0.0.1 и убрать порт из UFW (после проверки туннеля). */
+    suspend fun sshAccessRestrict(): JSONObject =
+        json("POST", "/api/ssh-access/restrict", body = JSONObject(), timeoutSeconds = 30)
+
+    /** Вернуть внешний доступ к панели. */
+    suspend fun sshAccessRestore(): JSONObject =
+        json("POST", "/api/ssh-access/restore", body = JSONObject(), timeoutSeconds = 30)
+
+    /** Убрать ключи/пользователя и вернуть внешний доступ. */
+    suspend fun sshAccessDisable(): JSONObject =
+        json("POST", "/api/ssh-access/disable", body = JSONObject(), timeoutSeconds = 60)
 
     suspend fun toolsStatus(): ToolsStatus = ToolsStatus.from(json("GET", "/api/tools/status"))
 
