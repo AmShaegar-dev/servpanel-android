@@ -44,9 +44,11 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import ru.servpanel.mobile.AppViewModel
 import ru.servpanel.mobile.data.ServerProfile
+import ru.servpanel.mobile.data.SslRenewState
 import ru.servpanel.mobile.data.SslStatus
 import ru.servpanel.mobile.ui.theme.PanelAccent
 import ru.servpanel.mobile.ui.theme.PanelAmber
@@ -74,6 +76,7 @@ fun SslScreen(vm: AppViewModel, server: ServerProfile) {
     var showCreate by remember { mutableStateOf(false) }
     var deleteSite by remember { mutableStateOf<String?>(null) }
     var renewCert by remember { mutableStateOf<String?>(null) }
+    var renewing by remember { mutableStateOf(false) }
 
     LaunchedEffect(server.id, vm.refreshTick, reload) {
         if (data == null) loading = true
@@ -433,19 +436,39 @@ fun SslScreen(vm: AppViewModel, server: ServerProfile) {
             text = { Text("Certbot попробует продлить сертификат «$name». Это может занять до минуты.") },
             confirmButton = {
                 TextButton(onClick = {
+                    renewCert = null
+                    renewing = true
+                    message = "Продлеваем сертификат «$name»…"
+                    messageOk = true
                     scope.launch {
                         try {
-                            vm.call(server) { sslRenew(name) }
-                            messageOk = true
-                            message = "Сертификат продлён"
+                            // Панель 3.0.50+ запускает certbot в фоне: запрос
+                            // возвращается сразу, результат читаем отдельно.
+                            var state: SslRenewState = vm.call(server) { sslRenew(name) }
+                            val deadline = System.currentTimeMillis() + 6 * 60 * 1000
+                            while (state.running && System.currentTimeMillis() < deadline) {
+                                delay(2500)
+                                state = runCatching {
+                                    vm.call(server) { sslRenewStatus(name) }
+                                }.getOrNull() ?: break
+                                if (state.none) break
+                            }
+                            messageOk = state.error.isBlank() && (state.ok || state.notDue)
+                            message = when {
+                                state.error.isNotBlank() -> state.error
+                                state.notDue -> "Продление не требуется: сертификат ещё действует"
+                                state.ok -> "Сертификат продлён"
+                                else -> "Продление запущено на сервере — обновите список позже"
+                            }
                             reload++
                         } catch (e: Exception) {
                             messageOk = false
                             message = e.message ?: "Не удалось продлить сертификат"
+                        } finally {
+                            renewing = false
                         }
-                        renewCert = null
                     }
-                }) { Text("Продлить") }
+                }, enabled = !renewing) { Text("Продлить") }
             },
             dismissButton = {
                 TextButton(onClick = { renewCert = null }) { Text("Отмена") }

@@ -52,6 +52,7 @@ enum class MoreScreen(val title: String) {
     Updates("Обновления"),
     Install("Установка"),
     Proxy("Прокси"),
+    RustDesk("RustDesk"),
     Diagnostics("Диагностика"),
     Services("Службы"),
     Users("Пользователи"),

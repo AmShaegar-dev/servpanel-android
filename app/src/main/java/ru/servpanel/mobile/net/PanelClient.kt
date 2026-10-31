@@ -40,11 +40,17 @@ import ru.servpanel.mobile.data.ProxyBotStatus
 import ru.servpanel.mobile.data.ProxyStatus
 import ru.servpanel.mobile.data.ProxyUser
 import ru.servpanel.mobile.data.ProxyUserLinks
+import ru.servpanel.mobile.data.RustDeskClient
+import ru.servpanel.mobile.data.RustDeskJob
+import ru.servpanel.mobile.data.RustDeskPort
+import ru.servpanel.mobile.data.RustDeskSettings
+import ru.servpanel.mobile.data.RustDeskStatus
 import ru.servpanel.mobile.data.SecurityStatus
 import ru.servpanel.mobile.data.ServerInfo
 import ru.servpanel.mobile.data.ServerProfile
 import ru.servpanel.mobile.data.ServiceInfo
 import ru.servpanel.mobile.data.SslSiteResult
+import ru.servpanel.mobile.data.SslRenewState
 import ru.servpanel.mobile.data.SslStatus
 import ru.servpanel.mobile.data.SysInfo
 import ru.servpanel.mobile.data.ToolsStatus
@@ -268,16 +274,24 @@ class PanelClient(
     ): String = text("GET", path, query, null, timeoutSeconds)
 
     suspend fun rawBytes(path: String, timeoutSeconds: Long = 120): ByteArray =
-        withContext(Dispatchers.IO) {
-            execute("GET", path, timeoutSeconds = timeoutSeconds).use { response ->
-                val bytes = response.body?.bytes() ?: ByteArray(0)
-                if (!response.isSuccessful) {
-                    val raw = bytes.toString(Charsets.UTF_8)
-                    throw errorFrom(response.code, raw)
-                }
-                bytes
+        rawBytes("GET", path, null, timeoutSeconds)
+
+    /** Бинарный ответ на POST: ZIP с конфигами, установщики RustDesk и т. п. */
+    suspend fun rawBytes(
+        method: String,
+        path: String,
+        body: RequestBody?,
+        timeoutSeconds: Long = 120
+    ): ByteArray = withContext(Dispatchers.IO) {
+        execute(method, path, body = body, timeoutSeconds = timeoutSeconds).use { response ->
+            val bytes = response.body?.bytes() ?: ByteArray(0)
+            if (!response.isSuccessful) {
+                val raw = bytes.toString(Charsets.UTF_8)
+                throw errorFrom(response.code, raw)
             }
+            bytes
         }
+    }
 
     // ------------------------------------------------------------------
     // Вход / сессия
@@ -427,6 +441,19 @@ class PanelClient(
         if (expires.isNotBlank()) body.put("expires", expires)
         val result = json("POST", "/api/create-bulk", body = body, timeoutSeconds = 180)
         return result.optJSONArray("configs")?.objects()?.map(BulkConfig::from) ?: emptyList()
+    }
+
+    /**
+     * Несколько готовых `.conf` одним ZIP (панель 3.0.50+).
+     * Раньше конфиги приходилось скачивать по одному.
+     */
+    suspend fun bulkConfigsZip(names: List<String>): ByteArray {
+        val body = JSONObject().put("names", JSONArray(names))
+        return rawBytes(
+            "POST", "/api/download-bulk",
+            body.toString().toRequestBody(JSON),
+            timeoutSeconds = 180
+        )
     }
 
     suspend fun renameClient(name: String, newName: String) {
@@ -721,9 +748,24 @@ class PanelClient(
         return SslSiteResult.from(json("POST", "/api/ssl/site", body = body, timeoutSeconds = 420))
     }
 
-    suspend fun sslRenew(name: String) {
-        json("POST", "/api/ssl/renew", body = JSONObject().put("name", name), timeoutSeconds = 360)
+    suspend fun sslRenew(name: String): SslRenewState {
+        val result = json(
+            "POST", "/api/ssl/renew",
+            body = JSONObject().put("name", name),
+            timeoutSeconds = 90
+        )
+        val job = result.optJSONObject("job")
+        return SslRenewState.from(job ?: result)
     }
+
+    suspend fun sslRenewStatus(name: String): SslRenewState =
+        SslRenewState.from(
+            json(
+                "GET", "/api/ssl/renew/status",
+                query = mapOf("name" to name),
+                timeoutSeconds = 30
+            )
+        )
 
     suspend fun sslDeleteSite(name: String) {
         json("DELETE", "/api/ssl/site/$name", timeoutSeconds = 120)
@@ -845,6 +887,59 @@ class PanelClient(
     suspend fun mtprotoLinks(): List<String> =
         json("GET", "/api/mtproto/links", timeoutSeconds = 30)
             .optJSONArray("links")?.stringList() ?: emptyList()
+
+    // ------------------------------------------------------------------
+    // RustDesk: свой ID/relay-сервер (панель 3.0.50+)
+    // ------------------------------------------------------------------
+
+    suspend fun rustdeskStatus(refresh: Boolean = false): RustDeskStatus =
+        RustDeskStatus.from(
+            json(
+                "GET", "/api/rustdesk/status",
+                query = if (refresh) mapOf("refresh" to "1") else emptyMap(),
+                timeoutSeconds = 90
+            )
+        )
+
+    suspend fun rustdeskJob(): RustDeskJob? =
+        RustDeskJob.fromOrNull(json("GET", "/api/rustdesk/job", timeoutSeconds = 30).optJSONObject("job"))
+
+    /** install, update или uninstall. Панель отвечает 202 и запускает задание. */
+    suspend fun rustdeskAction(action: String): RustDeskJob? =
+        RustDeskJob.fromOrNull(
+            json("POST", "/api/rustdesk/$action", timeoutSeconds = 60).optJSONObject("job")
+        )
+
+    suspend fun rustdeskSettings(
+        hostType: String,
+        domain: String,
+        openPorts: Boolean,
+        webClient: Boolean
+    ): RustDeskSettings {
+        val body = JSONObject()
+            .put("hostType", hostType)
+            .put("domain", domain)
+            .put("openPorts", openPorts)
+            .put("webClient", webClient)
+        val result = json("POST", "/api/rustdesk/settings", body = body, timeoutSeconds = 120)
+        return RustDeskSettings.from(result.optJSONObject("settings"))
+    }
+
+    suspend fun rustdeskOpenPorts(): List<RustDeskPort> =
+        json("POST", "/api/rustdesk/ports", timeoutSeconds = 120)
+            .optJSONArray("ports")?.objects()?.map(RustDeskPort::from) ?: emptyList()
+
+    /** Установщик клиента RustDesk для платформы (windows-x64-exe, android-arm64…). */
+    suspend fun rustdeskClient(id: String): ByteArray =
+        rawBytes("GET", "/api/rustdesk/client/$id", null, timeoutSeconds = 300)
+
+    /** Инструкция подключения в виде текста (панель отдаёт ещё и HTML). */
+    suspend fun rustdeskInstructions(): String =
+        text(
+            "GET", "/api/rustdesk/instructions",
+            query = mapOf("format" to "txt"),
+            timeoutSeconds = 30
+        )
 
     // ------------------------------------------------------------------
     // Диагностика

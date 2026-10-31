@@ -117,6 +117,7 @@ fun ClientsScreen(vm: AppViewModel, server: ServerProfile) {
     var createdName by remember { mutableStateOf<String?>(null) }
     var createdConf by remember { mutableStateOf<String?>(null) }
     var bulkResult by remember { mutableStateOf<List<BulkConfig>?>(null) }
+    var bulkZipLoading by remember { mutableStateOf(false) }
 
     LaunchedEffect(server.id, vm.refreshTick, reload) {
         if (clients == null) loading = true
@@ -455,6 +456,29 @@ fun ClientsScreen(vm: AppViewModel, server: ServerProfile) {
             subtitle = configs.joinToString(", ") { it.name },
             content = text,
             fileName = "servpanel-clients.txt",
+            zipLoading = bulkZipLoading,
+            onZip = {
+                bulkZipLoading = true
+                scope.launch {
+                    try {
+                        val bytes = vm.call(server) { bulkConfigsZip(configs.map { it.name }) }
+                        shareBytes(
+                            context,
+                            "servpanel_configs.zip",
+                            bytes,
+                            "application/zip"
+                        )
+                    } catch (e: Exception) {
+                        android.widget.Toast.makeText(
+                            context,
+                            e.message ?: "Не удалось скачать архив конфигов",
+                            android.widget.Toast.LENGTH_LONG
+                        ).show()
+                    } finally {
+                        bulkZipLoading = false
+                    }
+                }
+            },
             onDismiss = { bulkResult = null }
         )
     }
@@ -897,7 +921,9 @@ private fun ResultDialog(
     subtitle: String,
     content: String,
     fileName: String,
-    onDismiss: () -> Unit
+    onDismiss: () -> Unit,
+    onZip: (() -> Unit)? = null,
+    zipLoading: Boolean = false
 ) {
     val context = LocalContext.current
 
@@ -950,6 +976,17 @@ private fun ResultDialog(
                 }
 
                 Spacer(Modifier.height(12.dp))
+
+                if (onZip != null) {
+                    PanelButton(
+                        text = "Скачать ZIP",
+                        onClick = onZip,
+                        modifier = Modifier.fillMaxWidth(),
+                        loading = zipLoading,
+                        icon = Icons.Filled.Download
+                    )
+                    Spacer(Modifier.height(8.dp))
+                }
 
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     PanelOutlinedButton(

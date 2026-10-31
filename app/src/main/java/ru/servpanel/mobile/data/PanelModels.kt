@@ -1417,3 +1417,228 @@ data class ProxyBotStatus(
         )
     }
 }
+
+// ---------------------------------------------------------------------------
+// RustDesk: собственный ID/relay-сервер (панель 3.0.50+)
+// ---------------------------------------------------------------------------
+
+data class RustDeskPort(
+    val port: Int = 0,
+    val proto: String = "",
+    val label: String = "",
+    val open: Boolean = false
+) {
+    val caption: String get() = "$port/$proto"
+
+    companion object {
+        fun from(json: JSONObject): RustDeskPort = RustDeskPort(
+            port = json.num("port"),
+            proto = json.str("proto"),
+            label = json.str("label"),
+            open = json.flag("open")
+        )
+    }
+}
+
+data class RustDeskService(
+    val state: String = "",
+    val enabled: Boolean = false
+) {
+    val active: Boolean get() = state == "active"
+
+    companion object {
+        fun from(json: JSONObject?): RustDeskService = RustDeskService(
+            state = json?.str("state").orEmpty(),
+            enabled = json?.flag("enabled") ?: false
+        )
+    }
+}
+
+data class RustDeskCheck(
+    val id: String = "",
+    val title: String = "",
+    val ok: Boolean = false,
+    val detail: String = ""
+) {
+    companion object {
+        fun from(json: JSONObject): RustDeskCheck = RustDeskCheck(
+            id = json.str("id"),
+            title = json.str("title"),
+            ok = json.flag("ok"),
+            detail = json.str("detail")
+        )
+    }
+}
+
+data class RustDeskClient(
+    val id: String = "",
+    val group: String = "",
+    val label: String = "",
+    val name: String = "",
+    val size: Long = 0L,
+    val version: String = ""
+) {
+    companion object {
+        fun from(json: JSONObject): RustDeskClient = RustDeskClient(
+            id = json.str("id"),
+            group = json.str("group"),
+            label = json.str("label"),
+            name = json.str("name"),
+            size = json.long("size"),
+            version = json.str("version")
+        )
+    }
+}
+
+data class RustDeskSettings(
+    val hostType: String = "ip",
+    val domain: String = "",
+    val openPorts: Boolean = true,
+    val webClient: Boolean = false
+) {
+    companion object {
+        fun from(json: JSONObject?): RustDeskSettings {
+            if (json == null) return RustDeskSettings()
+            return RustDeskSettings(
+                hostType = json.str("hostType").ifBlank { "ip" },
+                domain = json.str("domain"),
+                openPorts = json.optBoolean("openPorts", true),
+                webClient = json.flag("webClient")
+            )
+        }
+    }
+}
+
+data class RustDeskStatus(
+    val installed: Boolean = false,
+    val version: String = "",
+    val latestVersion: String = "",
+    val updateAvailable: Boolean = false,
+    val host: String = "",
+    val relay: String = "",
+    val hostType: String = "ip",
+    val domain: String = "",
+    val suggestedDomain: String = "",
+    val suggestedSource: String = "",
+    val settings: RustDeskSettings = RustDeskSettings(),
+    val publicKey: String = "",
+    val services: Map<String, RustDeskService> = emptyMap(),
+    val ports: List<RustDeskPort> = emptyList(),
+    val checklist: List<RustDeskCheck> = emptyList(),
+    val clients: List<RustDeskClient> = emptyList(),
+    val clientVersion: String = "",
+    val cacheBytes: Long = 0L,
+    val error: String = ""
+) {
+    val running: Boolean
+        get() = installed &&
+            services["hbbs"]?.active == true &&
+            services["hbbr"]?.active == true
+
+    val openPorts: List<RustDeskPort> get() = ports.filter { it.open }
+
+    companion object {
+        fun from(json: JSONObject): RustDeskStatus {
+            val servicesJson = json.objOrNull("services")
+            val services = buildMap {
+                val source = servicesJson ?: JSONObject()
+                val keys = source.keys()
+                while (keys.hasNext()) {
+                    val key = keys.next()
+                    put(key, RustDeskService.from(source.optJSONObject(key)))
+                }
+            }
+            val cache = json.objOrNull("cache")
+            return RustDeskStatus(
+                installed = json.flag("installed"),
+                version = json.str("version"),
+                latestVersion = json.str("latestVersion"),
+                updateAvailable = json.flag("updateAvailable"),
+                host = json.str("host"),
+                relay = json.str("relay"),
+                hostType = json.str("hostType").ifBlank { "ip" },
+                domain = json.str("domain"),
+                suggestedDomain = json.str("suggestedDomain"),
+                suggestedSource = json.str("suggestedSource"),
+                settings = RustDeskSettings.from(json.objOrNull("settings")),
+                publicKey = json.str("publicKey"),
+                services = services,
+                ports = json.array("ports").objects().map(RustDeskPort::from),
+                checklist = json.array("checklist").objects().map(RustDeskCheck::from),
+                clients = json.array("clients").objects().map(RustDeskClient::from),
+                clientVersion = json.str("clientVersion"),
+                cacheBytes = cache?.long("bytes") ?: 0L,
+                error = json.str("error")
+            )
+        }
+    }
+}
+
+/** Фоновое задание RustDesk: установка, обновление или удаление. */
+data class RustDeskJob(
+    val action: String = "",
+    val running: Boolean = false,
+    val ok: Boolean = false,
+    val error: String = "",
+    val fromVersion: String = "",
+    val toVersion: String = "",
+    val startedAt: Long = 0L,
+    val finishedAt: Long = 0L,
+    val log: List<String> = emptyList()
+) {
+    val title: String
+        get() = when (action) {
+            "install" -> "Установка RustDesk"
+            "update" -> "Обновление RustDesk"
+            "uninstall" -> "Удаление RustDesk"
+            else -> "Операция RustDesk"
+        }
+
+    companion object {
+        fun fromOrNull(json: JSONObject?): RustDeskJob? {
+            if (json == null) return null
+            return RustDeskJob(
+                action = json.str("action"),
+                running = json.flag("running"),
+                ok = json.flag("ok"),
+                error = json.str("error"),
+                fromVersion = json.str("fromVersion"),
+                toVersion = json.str("toVersion"),
+                startedAt = json.long("startedAt"),
+                finishedAt = json.long("finishedAt"),
+                log = json.array("log").stringList()
+            )
+        }
+    }
+}
+
+/**
+ * Продление сертификата в панели 3.0.50+ выполняется в фоне:
+ * `POST /api/ssl/renew` отвечает сразу, результат читается из
+ * `GET /api/ssl/renew/status`. Старые панели отвечают синхронно.
+ */
+data class SslRenewState(
+    val name: String = "",
+    val running: Boolean = false,
+    val ok: Boolean = false,
+    val notDue: Boolean = false,
+    val none: Boolean = false,
+    val error: String = "",
+    val output: String = ""
+) {
+    companion object {
+        fun from(json: JSONObject): SslRenewState {
+            val running = json.flag("running")
+            val none = json.flag("none")
+            return SslRenewState(
+                name = json.str("name"),
+                running = running,
+                ok = json.flag("ok") || (json.flag("success") && !running && !none),
+                notDue = json.flag("notDue"),
+                none = none,
+                error = json.str("error"),
+                output = json.str("output")
+            )
+        }
+    }
+}

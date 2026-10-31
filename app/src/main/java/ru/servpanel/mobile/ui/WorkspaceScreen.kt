@@ -291,6 +291,7 @@ private fun WorkspaceContent(
                         MoreScreen.Updates -> UpdatesScreen(vm, server)
                         MoreScreen.Install -> InstallScreen(vm, server)
                         MoreScreen.Proxy -> ProxyScreen(vm, server)
+                        MoreScreen.RustDesk -> RustDeskScreen(vm, server)
                         MoreScreen.Diagnostics -> DiagnosticsScreen(vm, server)
                         MoreScreen.Services -> ServicesScreen(vm, server)
                         MoreScreen.Users -> UsersScreen(vm, server)

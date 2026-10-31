@@ -20,6 +20,7 @@ import androidx.compose.material.icons.automirrored.filled.OpenInNew
 import androidx.compose.material.icons.filled.Backup
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.Devices
 import androidx.compose.material.icons.filled.Group
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Language
@@ -69,6 +70,7 @@ private val moreEntries = listOf(
     MoreEntry(MoreScreen.Updates, "Обновления", "GitHub, архив и откат панели", Icons.Filled.SystemUpdate),
     MoreEntry(MoreScreen.Install, "Установка", "AmneziaWG, AdGuard, MTProto, WARP", Icons.Filled.Download),
     MoreEntry(MoreScreen.Proxy, "Прокси", "MTProxyL, Telemt: пользователи и лимиты", Icons.Filled.Send),
+    MoreEntry(MoreScreen.RustDesk, "RustDesk", "Свой ID/relay-сервер и клиенты", Icons.Filled.Devices),
     MoreEntry(MoreScreen.Diagnostics, "Диагностика", "Ping, traceroute и журналы", Icons.Filled.NetworkCheck),
     MoreEntry(MoreScreen.Services, "Службы", "Перезапуск системных сервисов", Icons.Filled.Settings),
     MoreEntry(MoreScreen.Users, "Пользователи", "Доступы, роли и 2FA", Icons.Filled.Group),
