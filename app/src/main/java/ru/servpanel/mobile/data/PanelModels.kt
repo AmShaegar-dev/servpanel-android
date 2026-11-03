@@ -297,9 +297,17 @@ data class SecurityStatus(
     val totpEnabled: Boolean,
     val dataDir: String,
     val defaultPassword: Boolean,
-    val passFileExists: Boolean
+    val passFileExists: Boolean,
+    // Панель 3.0.59+ отдельно говорит, настроен ли HTTPS на сервере.
+    // null — старая панель, ориентируемся на схему текущего запроса.
+    val httpsConfigured: Boolean? = null,
+    val httpsDomain: String = "",
+    val httpsPort: String = ""
 ) {
     val isAdmin: Boolean get() = role != "viewer"
+
+    /** HTTPS действительно настроен, а не просто запрос пришёл по TLS. */
+    val httpsOn: Boolean get() = httpsConfigured ?: https
 
     companion object {
         fun from(json: JSONObject): SecurityStatus = SecurityStatus(
@@ -313,7 +321,10 @@ data class SecurityStatus(
             totpEnabled = json.flag("totpEnabled"),
             dataDir = json.str("dataDir"),
             defaultPassword = json.flag("defaultPassword"),
-            passFileExists = json.flag("passFileExists")
+            passFileExists = json.flag("passFileExists"),
+            httpsConfigured = if (json.has("httpsConfigured")) json.flag("httpsConfigured") else null,
+            httpsDomain = json.str("httpsDomain"),
+            httpsPort = json.str("httpsPort")
         )
     }
 }

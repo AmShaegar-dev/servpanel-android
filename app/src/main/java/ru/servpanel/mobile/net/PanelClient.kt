@@ -415,8 +415,19 @@ class PanelClient(
     suspend fun history(range: String, view: String): HistoryData =
         HistoryData.from(json("GET", "/api/history", mapOf("range" to range, "view" to view)))
 
-    suspend fun securityStatus(): SecurityStatus =
-        SecurityStatus.from(json("GET", "/api/security/status"))
+    suspend fun securityStatus(): SecurityStatus {
+        val status = SecurityStatus.from(json("GET", "/api/security/status"))
+        if (status.httpsConfigured != null) return status
+        // Панели до 3.0.59 отдают только `https` — схему текущего запроса.
+        // Через SSH-туннель она всегда http, хотя сертификат выпущен,
+        // поэтому уточняем настройку по /api/ssl/status.
+        val ssl = runCatching { sslStatus() }.getOrNull() ?: return status
+        return status.copy(
+            httpsConfigured = ssl.panelScheme.equals("https", ignoreCase = true),
+            httpsDomain = ssl.panelDomain,
+            httpsPort = ssl.panelHttpsPort
+        )
+    }
 
     suspend fun interfaces(): List<String> = array("/api/interfaces").stringList()
 

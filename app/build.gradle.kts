@@ -4,10 +4,10 @@ plugins {
     id("org.jetbrains.kotlin.plugin.compose")
 }
 
-// Версия задаётся при сборке: -PappVersionName=1.4.7 -PappVersionCode=10407
+// Версия задаётся при сборке: -PappVersionName=1.4.8 -PappVersionCode=10408
 // CI подставляет имя тега и номер запуска, локально работают значения по умолчанию.
-val appVersionName = (findProperty("appVersionName") as String?)?.takeIf { it.isNotBlank() } ?: "1.4.7"
-val appVersionCode = (findProperty("appVersionCode") as String?)?.toIntOrNull() ?: 10407
+val appVersionName = (findProperty("appVersionName") as String?)?.takeIf { it.isNotBlank() } ?: "1.4.8"
+val appVersionCode = (findProperty("appVersionCode") as String?)?.toIntOrNull() ?: 10408
 
 // Репозиторий, на который ссылается экран «Ещё» и откуда качаются обновления.
 val githubRepo = (findProperty("githubRepo") as String?)?.takeIf { it.isNotBlank() }

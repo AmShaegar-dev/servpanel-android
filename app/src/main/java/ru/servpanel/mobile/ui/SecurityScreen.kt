@@ -319,8 +319,8 @@ private fun StatusCard(status: SecurityStatus) {
                 )
             }
             Badge(
-                if (status.https) "HTTPS" else "HTTP",
-                if (status.https) PanelGreen else PanelAmber
+                if (status.httpsOn) "HTTPS" else "HTTP",
+                if (status.httpsOn) PanelGreen else PanelAmber
             )
         }
 
@@ -328,9 +328,19 @@ private fun StatusCard(status: SecurityStatus) {
 
         InfoRow(
             "HTTPS",
-            if (status.https) "Включён" else "Не настроен",
-            valueColor = if (status.https) PanelGreen else PanelAmber
+            when {
+                status.httpsOn && status.httpsDomain.isNotBlank() -> "Настроен"
+                status.httpsOn -> "Включён"
+                else -> "Не настроен"
+            },
+            valueColor = if (status.httpsOn) PanelGreen else PanelAmber
         )
+        if (status.httpsOn && status.httpsDomain.isNotBlank()) {
+            InfoRow("Домен панели", status.httpsDomain)
+            if (status.httpsPort.isNotBlank()) {
+                InfoRow("HTTPS-порт", status.httpsPort)
+            }
+        }
         InfoRow(
             "2FA",
             if (status.totpEnabled) "Включена" else "Выключена",

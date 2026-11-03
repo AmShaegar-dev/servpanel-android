@@ -497,7 +497,11 @@ private fun StatusOverviewCard(data: OverviewData, server: ServerProfile) {
                 "Ядра" to data.sys.cores.toString(),
                 "Node.js" to data.security.node,
                 "Порт панели" to data.security.panelPublicPort.ifBlank { data.security.panelPort },
-                "HTTPS" to if (data.security.https) "включён" else "нет",
+                "HTTPS" to when {
+                    data.security.httpsOn && data.security.httpsDomain.isNotBlank() -> data.security.httpsDomain
+                    data.security.httpsOn -> "включён"
+                    else -> "нет"
+                },
                 "Метрики" to if (server.metricsPort > 0) "порт ${server.metricsPort}" else "через API"
             )
         )
@@ -605,8 +609,8 @@ private fun SecurityOverviewCard(
 
         InfoRow(
             "HTTPS",
-            if (security.https) "Включён" else "Не настроен",
-            valueColor = if (security.https) PanelGreen else PanelAmber
+            if (security.httpsOn) "Включён" else "Не настроен",
+            valueColor = if (security.httpsOn) PanelGreen else PanelAmber
         )
         InfoRow(
             "2FA",
