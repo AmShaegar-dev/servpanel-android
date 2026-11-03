@@ -255,6 +255,9 @@ fun OverviewScreen(vm: AppViewModel, server: ServerProfile) {
         item {
             val chart = history?.takeIf { it.range == range }
             val periodLabel = ranges.firstOrNull { it.first == range }?.second ?: range
+            // Как в панели: сумма rx/tx по всем клиентам — «сколько всего прошло».
+            val totalRx = current.clients.sumOf { it.rx }
+            val totalTx = current.clients.sumOf { it.tx }
             PanelCard {
                 SectionHeader(
                     title = "Трафик",
@@ -265,7 +268,27 @@ fun OverviewScreen(vm: AppViewModel, server: ServerProfile) {
                         }
                     }
                 )
-                Spacer(Modifier.height(10.dp))
+                Spacer(Modifier.height(12.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    SummaryStat(
+                        label = "принято за всё время",
+                        value = "↓ ${formatBytes(totalRx)}",
+                        accent = PanelAccent,
+                        modifier = Modifier.weight(1f)
+                    )
+                    SummaryStat(
+                        label = "отдано за всё время",
+                        value = "↑ ${formatBytes(totalTx)}",
+                        accent = PanelViolet,
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+                Spacer(Modifier.height(12.dp))
+                PanelDivider()
+                Spacer(Modifier.height(12.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     ranges.forEach { (key, label) ->
                         RangeChip(
