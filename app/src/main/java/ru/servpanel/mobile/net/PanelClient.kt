@@ -682,6 +682,30 @@ class PanelClient(
     suspend fun warpTest(): WarpTestResult =
         WarpTestResult.from(json("POST", "/api/warp/test", timeoutSeconds = 60))
 
+    /** Выбранные сервисы (нейросети) для маршрутизации через WARP. */
+    suspend fun warpSaveServices(ids: List<String>) {
+        json(
+            "POST", "/api/warp/services",
+            body = JSONObject().put("services", JSONArray(ids)),
+            timeoutSeconds = 60
+        )
+    }
+
+    /** Инструкция панели (HTML) — как настроить вручную, принцип работы и откат. */
+    suspend fun warpInstructions(): String =
+        rawText("/api/warp/instructions", timeoutSeconds = 60)
+
+    /** Запуск установки WARP + Xray: вариант 1 или 2 (панель 3.0.78+). */
+    suspend fun warpInstall(mode: String): JSONObject =
+        installModule(
+            JSONObject()
+                .put("module", "warp")
+                .put("warpMode", if (mode == "v1") "v1" else "v2")
+                .put("listenIp", "0.0.0.0")
+                .put("listenPort", 443)
+                .put("socksPort", 40000)
+        )
+
     // ------------------------------------------------------------------
     // Бэкапы
     // ------------------------------------------------------------------

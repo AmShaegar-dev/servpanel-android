@@ -569,9 +569,16 @@ data class WarpStatus(
     val domains: Int,
     val listenIp: String,
     val listenPort: String,
-    val socksPort: String
+    val socksPort: String,
+    val mode: String = "v2",
+    val selectedServices: List<String> = emptyList(),
+    val services: List<WarpService> = emptyList(),
+    val checks: List<WarpCheck> = emptyList()
 ) {
     val active: Boolean get() = warpActive || connected
+
+    /** Панель 3.0.78+ подписывает вариант: v1 — всё через WARP, v2 — AI через WARP. */
+    val variant: String get() = if (mode == "v1") "вариант 1" else "вариант 2"
 
     companion object {
         fun from(json: JSONObject): WarpStatus = WarpStatus(
@@ -583,7 +590,45 @@ data class WarpStatus(
             domains = json.num("domains"),
             listenIp = json.str("listenIp"),
             listenPort = json.optString("listenPort", ""),
-            socksPort = json.optString("socksPort", "")
+            socksPort = json.optString("socksPort", ""),
+            mode = json.str("mode").ifBlank { "v2" },
+            selectedServices = json.array("selectedServices").stringList(),
+            services = json.array("services").objects().map(WarpService::from),
+            checks = json.array("checks").objects().map(WarpCheck::from)
+        )
+    }
+}
+
+/** Сервис (нейросеть), который можно пустить через WARP. */
+data class WarpService(
+    val id: String,
+    val label: String,
+    val group: String,
+    val selected: Boolean
+) {
+    companion object {
+        fun from(json: JSONObject): WarpService = WarpService(
+            id = json.str("id"),
+            label = json.str("label").ifBlank { json.str("id") },
+            group = json.str("group"),
+            selected = json.flag("selected")
+        )
+    }
+}
+
+/** Пункт чек-листа установки WARP + Xray. */
+data class WarpCheck(
+    val id: String,
+    val title: String,
+    val ok: Boolean,
+    val detail: String
+) {
+    companion object {
+        fun from(json: JSONObject): WarpCheck = WarpCheck(
+            id = json.str("id"),
+            title = json.str("title"),
+            ok = json.flag("ok"),
+            detail = json.str("detail")
         )
     }
 }

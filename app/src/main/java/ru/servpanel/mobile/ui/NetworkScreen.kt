@@ -19,7 +19,12 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.HelpOutline
+import androidx.compose.material.icons.filled.SystemUpdate
+import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material.icons.filled.Lan
 import androidx.compose.material.icons.filled.Public
 import androidx.compose.material.icons.filled.Refresh
@@ -49,6 +54,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import ru.servpanel.mobile.AppViewModel
 import ru.servpanel.mobile.data.CascadeHealth
@@ -931,120 +938,453 @@ private fun androidx.compose.foundation.lazy.LazyListScope.warpItems(
 ) {
     item {
         val warp = data.warp
+        val context = androidx.compose.ui.platform.LocalContext.current
         var busy by remember { mutableStateOf(false) }
         var testing by remember { mutableStateOf(false) }
         var testResult by remember { mutableStateOf<String?>(null) }
+        var confirmMode by remember { mutableStateOf<String?>(null) }
+        var installing by remember { mutableStateOf(false) }
+        var installStatus by remember { mutableStateOf<String?>(null) }
+        var installLog by remember { mutableStateOf("") }
+        var message by remember { mutableStateOf<String?>(null) }
+        var selected by remember(server.id, warp?.selectedServices) {
+            mutableStateOf(
+                warp?.selectedServices?.toSet()
+                    ?: warp?.services?.filter { it.selected }?.map { it.id }?.toSet()
+                    ?: emptySet()
+            )
+        }
+        var showInstructions by remember { mutableStateOf(false) }
+        var instructions by remember { mutableStateOf<String?>(null) }
+        var instructionsLoading by remember { mutableStateOf(false) }
 
-        PanelCard {
-            SectionHeader(
-                title = "Cloudflare WARP",
-                subtitle = "Выход в интернет через WARP для AdGuard"
-            )
-
-            Spacer(Modifier.height(10.dp))
-
-            InfoRow(
-                "Установлен",
-                if (warp?.installed == true) "Да" else "Нет",
-                valueColor = if (warp?.installed == true) PanelGreen else PanelMuted
-            )
-            InfoRow(
-                "WARP",
-                if (warp?.warpActive == true) "Активен" else "Выключен",
-                valueColor = if (warp?.warpActive == true) PanelGreen else PanelMuted
-            )
-            InfoRow(
-                "Xray",
-                if (warp?.xrayActive == true) "Активен" else "Выключен",
-                valueColor = if (warp?.xrayActive == true) PanelGreen else PanelMuted
-            )
-            InfoRow("Доменов", warp?.domains?.toString().orEmpty())
-            InfoRow("SOCKS-порт", warp?.socksPort.orEmpty())
-            if (warp?.warpStatus?.isNotBlank() == true) {
-                Spacer(Modifier.height(8.dp))
-                Surface(
-                    shape = RoundedCornerShape(10.dp),
-                    color = PanelSurface,
-                    border = BorderStroke(1.dp, PanelBorder),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Text(
-                        warp.warpStatus.take(500),
-                        style = MaterialTheme.typography.labelSmall,
-                        color = PanelMuted,
-                        modifier = Modifier.padding(10.dp)
-                    )
+        fun startPreset(mode: String) {
+            installing = true
+            message = null
+            installLog = ""
+            installStatus = "Сохраняем сервисы…"
+            scope.launch {
+                try {
+                    vm.call(server) { warpSaveServices(selected.toList()) }
+                    installStatus = "Запускаем установку…"
+                    vm.call(server) { warpInstall(mode) }
+                    installStatus = "Установка идёт…"
+                    val deadline = System.currentTimeMillis() + 20 * 60 * 1000
+                    while (isActive) {
+                        delay(2000)
+                        val progress = runCatching {
+                            vm.call(server) { installProgress("/var/log/warp_install.log") }
+                        }.getOrNull()
+                        if (progress != null) {
+                            installLog = progress.text.takeLast(4000)
+                            if (progress.status.isNotBlank()) installStatus = progress.status
+                            if (progress.done) {
+                                message = if (progress.error) {
+                                    "Установка завершилась с ошибкой — смотрите журнал ниже"
+                                } else {
+                                    "Готово: ${if (mode == "v1") "вариант 1" else "вариант 2"} применён"
+                                }
+                                break
+                            }
+                        }
+                        if (System.currentTimeMillis() > deadline) {
+                            message = "Установка идёт дольше 20 минут — проверьте журнал на сервере"
+                            break
+                        }
+                    }
+                } catch (e: Exception) {
+                    message = e.message ?: "Не удалось запустить установку"
+                } finally {
+                    installing = false
+                    onChanged()
                 }
             }
+        }
 
-            if (isAdmin) {
-                Spacer(Modifier.height(12.dp))
-                ToggleRow(
-                    title = "WARP / Xray",
-                    subtitle = "Включение принимает TOS Cloudflare",
-                    checked = warp?.active == true,
-                    onCheckedChange = { value ->
-                        busy = true
-                        scope.launch {
-                            runCatching { vm.call(server) { warpPower(value) } }
-                            busy = false
-                            onChanged()
+        val checks = warp?.checks.orEmpty()
+        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            PanelCard {
+                SectionHeader(
+                    title = "Cloudflare WARP",
+                    subtitle = "Выход в интернет через WARP для AdGuard",
+                    trailing = {
+                        if (warp?.installed == true) {
+                            Badge(
+                                warp.variant,
+                                if (warp.mode == "v1") PanelAmber else PanelAccent
+                            )
                         }
-                    },
-                    enabled = !busy && warp?.installed == true
+                    }
                 )
 
                 Spacer(Modifier.height(10.dp))
 
-                PanelOutlinedButton(
-                    text = "Проверить выходной IP",
-                    onClick = {
-                        testing = true
-                        scope.launch {
-                            val result = runCatching { vm.call(server) { warpTest() } }.getOrNull()
-                            testResult = when {
-                                result == null -> "Не удалось выполнить проверку"
-                                result.ok -> buildString {
-                                    append(result.ip.ifBlank { "—" })
-                                    if (result.org.isNotBlank()) append(" · ${result.org}")
-                                    if (result.country.isNotBlank()) append(" · ${result.country}")
-                                    if (result.city.isNotBlank()) append(" · ${result.city}")
+                InfoRow(
+                    "Установлен",
+                    if (warp?.installed == true) "Да" else "Нет",
+                    valueColor = if (warp?.installed == true) PanelGreen else PanelMuted
+                )
+                InfoRow(
+                    "WARP",
+                    if (warp?.warpActive == true) "Активен" else "Выключен",
+                    valueColor = if (warp?.warpActive == true) PanelGreen else PanelMuted
+                )
+                InfoRow(
+                    "Xray",
+                    if (warp?.xrayActive == true) "Активен" else "Выключен",
+                    valueColor = if (warp?.xrayActive == true) PanelGreen else PanelMuted
+                )
+                InfoRow("Сервисов", warp?.selectedServices?.size?.toString() ?: "0")
+                InfoRow("SOCKS-порт", warp?.socksPort.orEmpty())
+                warp?.listenPort?.takeIf { it.isNotBlank() }?.let { port ->
+                    InfoRow("Порт Xray", port)
+                }
+
+                if (checks.isNotEmpty()) {
+                    Spacer(Modifier.height(10.dp))
+                    checks.forEach { check ->
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 4.dp),
+                            verticalAlignment = Alignment.Top
+                        ) {
+                            Icon(
+                                if (check.ok) Icons.Filled.CheckCircle else Icons.Filled.Warning,
+                                contentDescription = null,
+                                tint = if (check.ok) PanelGreen else PanelAmber,
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Spacer(Modifier.width(8.dp))
+                            Column(Modifier.weight(1f)) {
+                                Text(
+                                    check.title,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = if (check.ok) PanelText else PanelAmber
+                                )
+                                if (check.detail.isNotBlank()) {
+                                    Text(
+                                        check.detail,
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = PanelMuted
+                                    )
                                 }
-                                else -> result.error.ifBlank { "WARP не ответил" }
                             }
-                            testing = false
+                        }
+                    }
+                }
+
+                warp?.warpStatus?.takeIf { it.isNotBlank() }?.let { status ->
+                    Spacer(Modifier.height(8.dp))
+                    Surface(
+                        shape = RoundedCornerShape(10.dp),
+                        color = PanelSurface,
+                        border = BorderStroke(1.dp, PanelBorder),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(
+                            status.take(500),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = PanelMuted,
+                            modifier = Modifier.padding(10.dp)
+                        )
+                    }
+                }
+
+                if (isAdmin) {
+                    Spacer(Modifier.height(12.dp))
+                    ToggleRow(
+                        title = "WARP / Xray",
+                        subtitle = "Включение принимает TOS Cloudflare",
+                        checked = warp?.active == true,
+                        onCheckedChange = { value ->
+                            busy = true
+                            scope.launch {
+                                runCatching { vm.call(server) { warpPower(value) } }
+                                busy = false
+                                onChanged()
+                            }
+                        },
+                        enabled = !busy && !installing && warp?.installed == true
+                    )
+
+                    Spacer(Modifier.height(12.dp))
+
+                    PanelButton(
+                        text = "Накатить вариант 1",
+                        onClick = { confirmMode = "v1" },
+                        modifier = Modifier.fillMaxWidth(),
+                        enabled = !installing && !busy,
+                        icon = Icons.Filled.Download
+                    )
+                    Text(
+                        "Первая инструкция: WARP + Xray с нуля, весь трафик через WARP.",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = PanelMuted,
+                        modifier = Modifier.padding(top = 6.dp, bottom = 10.dp)
+                    )
+
+                    PanelOutlinedButton(
+                        text = "Накатить вариант 2",
+                        onClick = { confirmMode = "v2" },
+                        modifier = Modifier.fillMaxWidth(),
+                        enabled = !installing && !busy,
+                        icon = Icons.Filled.SystemUpdate
+                    )
+                    Text(
+                        "Вторая инструкция: Google/Gemini напрямую, нейросети — через WARP.",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = PanelMuted,
+                        modifier = Modifier.padding(top = 6.dp)
+                    )
+
+                    Spacer(Modifier.height(10.dp))
+
+                    PanelOutlinedButton(
+                        text = "Проверить выходной IP",
+                        onClick = {
+                            testing = true
+                            scope.launch {
+                                val result = runCatching { vm.call(server) { warpTest() } }.getOrNull()
+                                testResult = when {
+                                    result == null -> "Не удалось выполнить проверку"
+                                    result.ok -> buildString {
+                                        append(result.ip.ifBlank { "—" })
+                                        if (result.org.isNotBlank()) append(" · ${result.org}")
+                                        if (result.country.isNotBlank()) append(" · ${result.country}")
+                                        if (result.city.isNotBlank()) append(" · ${result.city}")
+                                    }
+                                    else -> result.error.ifBlank { "WARP не ответил" }
+                                }
+                                testing = false
+                            }
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                        loading = testing,
+                        enabled = warp?.installed == true && !installing
+                    )
+
+                    testResult?.let { text ->
+                        Spacer(Modifier.height(8.dp))
+                        Text(text, style = MaterialTheme.typography.bodySmall, color = PanelMuted)
+                    }
+
+                    message?.let { text ->
+                        Spacer(Modifier.height(10.dp))
+                        Text(
+                            text,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = if (text.startsWith("Готово")) PanelGreen else PanelAmber
+                        )
+                    }
+
+                    if (installing || installLog.isNotBlank()) {
+                        Spacer(Modifier.height(10.dp))
+                        Text(
+                            installStatus ?: "Установка…",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = PanelAccent
+                        )
+                        Spacer(Modifier.height(6.dp))
+                        Surface(
+                            shape = RoundedCornerShape(10.dp),
+                            color = PanelSurface,
+                            border = BorderStroke(1.dp, PanelBorder),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(max = 200.dp)
+                        ) {
+                            Column(
+                                Modifier
+                                    .verticalScroll(rememberScrollState())
+                                    .padding(10.dp)
+                            ) {
+                                Text(
+                                    installLog.ifBlank { "Подключаемся к панели…" },
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = PanelMuted
+                                )
+                            }
+                        }
+                    }
+                }
+
+                Spacer(Modifier.height(10.dp))
+
+                PanelOutlinedButton(
+                    text = "Инструкции",
+                    onClick = {
+                        showInstructions = true
+                        if (instructions == null && !instructionsLoading) {
+                            instructionsLoading = true
+                            scope.launch {
+                                instructions = runCatching {
+                                    vm.call(server) { warpInstructions() }
+                                }.getOrNull()?.let(::htmlToText)
+                                instructionsLoading = false
+                            }
                         }
                     },
                     modifier = Modifier.fillMaxWidth(),
-                    loading = testing,
-                    enabled = warp?.installed == true
+                    icon = Icons.Filled.HelpOutline
                 )
+            }
 
-                testResult?.let { text ->
+            if (isAdmin && warp != null && warp.services.isNotEmpty()) {
+                PanelCard {
+                    SectionHeader(
+                        title = "Сервисы",
+                        subtitle = "Что пускать через WARP (вариант 2)"
+                    )
                     Spacer(Modifier.height(8.dp))
-                    Text(
-                        text,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = PanelMuted
+                    warp.services.forEach { service ->
+                        ToggleRow(
+                            title = service.label,
+                            subtitle = service.group,
+                            checked = selected.contains(service.id),
+                            onCheckedChange = { on ->
+                                selected = if (on) selected + service.id else selected - service.id
+                            },
+                            enabled = !installing
+                        )
+                    }
+                    Spacer(Modifier.height(10.dp))
+                    PanelOutlinedButton(
+                        text = "Сохранить выбор",
+                        onClick = {
+                            scope.launch {
+                                runCatching { vm.call(server) { warpSaveServices(selected.toList()) } }
+                                onChanged()
+                            }
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                        enabled = !installing
                     )
                 }
             }
-        }
-    }
 
-    item {
-        PanelCard {
-            SectionHeader("Как это работает", null)
-            Spacer(Modifier.height(8.dp))
-            Text(
-                "WARP поднимает туннель Cloudflare и отдаёт его локальному Xray. " +
-                    "AdGuard Home использует этот прокси как upstream, поэтому запросы уходят " +
-                    "не с IP сервера. Включение и выключение не удаляет пакеты.",
-                style = MaterialTheme.typography.bodySmall,
-                color = PanelMuted
+            PanelCard {
+                SectionHeader("Как это работает", null)
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    "WARP поднимает туннель Cloudflare и отдаёт его локальному Xray. " +
+                        "AdGuard Home использует этот прокси как upstream, поэтому запросы уходят " +
+                        "не с IP сервера. Включение и выключение не удаляет пакеты.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = PanelMuted
+                )
+            }
+        }
+
+        confirmMode?.let { mode ->
+            AlertDialog(
+                onDismissRequest = { confirmMode = null },
+                containerColor = PanelElevated,
+                title = {
+                    Text(if (mode == "v1") "Накатить вариант 1?" else "Накатить вариант 2?")
+                },
+                text = {
+                    Text(
+                        if (mode == "v1") {
+                            "WARP и Xray ставятся с нуля (если их нет), весь трафик идёт " +
+                                "через WARP. Порт 443 должен быть свободен. Правила AdGuard " +
+                                "панель не записывает — их нужно скопировать из «Инструкции»."
+                        } else {
+                            "WARP и Xray ставятся с нуля (если их нет). Google/Gemini идут " +
+                                "напрямую с IP сервера, нейросети — через WARP. Порт 443 должен " +
+                                "быть свободен. Правила AdGuard панель не записывает — их нужно " +
+                                "скопировать из «Инструкции»."
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = PanelMuted
+                    )
+                },
+                confirmButton = {
+                    TextButton(onClick = {
+                        confirmMode = null
+                        startPreset(mode)
+                    }) { Text("Накатить") }
+                },
+                dismissButton = {
+                    TextButton(onClick = { confirmMode = null }) { Text("Отмена") }
+                }
+            )
+        }
+
+        if (showInstructions) {
+            AlertDialog(
+                onDismissRequest = { showInstructions = false },
+                containerColor = PanelElevated,
+                title = { Text("WARP — инструкция") },
+                text = {
+                    Surface(
+                        shape = RoundedCornerShape(10.dp),
+                        color = PanelSurface,
+                        border = BorderStroke(1.dp, PanelBorder),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(max = 380.dp)
+                    ) {
+                        when {
+                            instructionsLoading && instructions == null -> Column(Modifier.padding(12.dp)) {
+                                Text(
+                                    "Загружаем инструкцию…",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = PanelMuted
+                                )
+                            }
+                            else -> Text(
+                                instructions ?: "Инструкция недоступна",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = PanelText,
+                                modifier = Modifier
+                                    .verticalScroll(rememberScrollState())
+                                    .padding(10.dp)
+                            )
+                        }
+                    }
+                },
+                confirmButton = {
+                    TextButton(
+                        onClick = {
+                            instructions?.let {
+                                copyToClipboard(context, it, "Инструкция скопирована")
+                            }
+                        },
+                        enabled = instructions != null
+                    ) { Text("Копировать") }
+                },
+                dismissButton = {
+                    TextButton(onClick = { showInstructions = false }) { Text("Закрыть") }
+                }
             )
         }
     }
+}
+
+/**
+ * Грубое превращение HTML-инструкции панели в текст: заголовки, пункты списка
+ * и блоки <pre> сохраняют переносы строк, служебные теги вырезаются.
+ */
+private fun htmlToText(html: String): String {
+    var s = html
+    s = Regex("(?is)<(script|style|head)[^>]*>.*?</(script|style|head)>").replace(s, "")
+    s = Regex("(?i)<br\\s*/?>").replace(s, "\n")
+    s = Regex("(?i)</(p|div|h[1-6]|tr|pre|li|table)>").replace(s, "\n")
+    s = Regex("(?i)<li[^>]*>").replace(s, "• ")
+    s = Regex("(?i)</t[dh]>").replace(s, "  ")
+    s = Regex("(?is)<[^>]+>").replace(s, "")
+    s = s.replace("&nbsp;", " ")
+        .replace("&amp;", "&")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&#39;", "'")
+        .replace("&mdash;", "—")
+        .replace("&ndash;", "–")
+    s = Regex("[ \\t]+\\n").replace(s, "\n")
+    s = Regex("\\n{3,}").replace(s, "\n\n")
+    return s.trim()
 }
 
 /** Подпись кнопки применения: отражает, что именно изменится на сервере. */
