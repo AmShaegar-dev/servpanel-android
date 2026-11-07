@@ -51,11 +51,14 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
 import ru.servpanel.mobile.AppViewModel
 import ru.servpanel.mobile.AuthStatus
 import ru.servpanel.mobile.WorkspaceTab
@@ -67,6 +70,8 @@ import ru.servpanel.mobile.data.ServerProfile
 import ru.servpanel.mobile.data.ServiceInfo
 import ru.servpanel.mobile.data.SysInfo
 import ru.servpanel.mobile.data.ToolsStatus
+import ru.servpanel.mobile.net.DashboardCache
+import ru.servpanel.mobile.net.DashboardSnapshot
 import ru.servpanel.mobile.ui.theme.PanelAccent
 import ru.servpanel.mobile.ui.theme.PanelAmber
 import ru.servpanel.mobile.ui.theme.PanelBorder
@@ -81,10 +86,10 @@ import kotlin.math.max
 private data class OverviewData(
     val sys: SysInfo,
     val clients: List<ClientInfo>,
-    val services: List<ServiceInfo>,
-    val security: SecurityStatus,
-    val cascade: CascadeStatus?,
-    val tools: ToolsStatus?
+    val services: List<ServiceInfo> = emptyList(),
+    val security: SecurityStatus? = null,
+    val cascade: CascadeStatus? = null,
+    val tools: ToolsStatus? = null
 )
 
 private val ranges = listOf("5m" to "5 мин", "1h" to "1 ч", "3h" to "3 ч", "24h" to "24 ч", "7d" to "7 дн")
@@ -96,12 +101,18 @@ fun OverviewScreen(vm: AppViewModel, server: ServerProfile) {
     var loading by remember(server.id) { mutableStateOf(true) }
     var range by remember(server.id) { mutableStateOf("1h") }
     var autoTick by remember(server.id) { mutableIntStateOf(0) }
+    // Тяжёлые разделы (службы, защита, каскад, инструменты) обновляются
+    // реже: каждый такой запрос — это несколько systemctl/ipset на сервере.
+    var slowTick by remember(server.id) { mutableIntStateOf(0) }
     var restarting by remember { mutableStateOf<Set<String>>(emptySet()) }
     // История трафика грузится отдельно: переключение периода не должно
     // перезапрашивать клиентов, службы и статус защиты.
     var history by remember(server.id) { mutableStateOf<HistoryData?>(null) }
     var historyLoading by remember(server.id) { mutableStateOf(true) }
+    var fromCache by remember(server.id) { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
+    val context = androidx.compose.ui.platform.LocalContext.current.applicationContext
+    val cache = remember(context) { DashboardCache(context) }
 
     LaunchedEffect(server.id) {
         while (isActive) {
@@ -110,6 +121,30 @@ fun OverviewScreen(vm: AppViewModel, server: ServerProfile) {
         }
     }
 
+    LaunchedEffect(server.id) {
+        while (isActive) {
+            delay(90_000)
+            slowTick++
+        }
+    }
+
+    // Снимок с прошлого раза показываем сразу, не дожидаясь сети.
+    LaunchedEffect(server.id) {
+        if (data != null) return@LaunchedEffect
+        val cached = withContext(Dispatchers.IO) { cache.load(server.id) } ?: return@LaunchedEffect
+        if (data == null) {
+            data = OverviewData(
+                sys = cached.sys,
+                clients = cached.clients,
+                services = cached.services,
+                security = cached.security
+            )
+            fromCache = true
+            loading = false
+        }
+    }
+
+    // Фаза 1: то, без чего экран бесполезен — нагрузка и клиенты.
     LaunchedEffect(
         server.id,
         server.apiUrl,
@@ -119,49 +154,99 @@ fun OverviewScreen(vm: AppViewModel, server: ServerProfile) {
         autoTick
     ) {
         if (data == null) loading = true
-        error = null
-        try {
-            val result = coroutineScope {
-                val sys = async {
-                    // Если задан отдельный порт метрик — берём цифры оттуда,
-                    // иначе используем обычный /api/sysinfo панели.
-                    val fromMetrics = if (server.metricsPort > 0) {
-                        runCatching { vm.call(server) { metrics() } }
-                            .onFailure {
-                                android.util.Log.w(
-                                    "ServpanelOverview",
-                                    "Метрики (порт ${server.metricsPort}) недоступны: ${it.message}",
-                                    it
-                                )
-                            }
-                            .getOrNull()
-                    } else {
-                        null
-                    }
-                    fromMetrics?.toSysInfo() ?: vm.call(server) { sysinfo() }
+        val sys = runCatching {
+            withTimeout(12_000) {
+                // Если задан отдельный порт метрик — берём цифры оттуда,
+                // иначе используем обычный /api/sysinfo панели.
+                val fromMetrics = if (server.metricsPort > 0) {
+                    runCatching { vm.call(server) { metrics() } }
+                        .onFailure {
+                            android.util.Log.w(
+                                "ServpanelOverview",
+                                "Метрики (порт ${server.metricsPort}) недоступны: ${it.message}",
+                                it
+                            )
+                        }
+                        .getOrNull()
+                } else {
+                    null
                 }
-                val clients = async { vm.call(server) { clients() } }
-                val services = async { vm.call(server) { services() } }
-                val security = async { vm.call(server) { securityStatus() } }
-                val cascade = async { runCatching { vm.call(server) { cascadeStatus() } }.getOrNull() }
-                val tools = async { runCatching { vm.call(server) { toolsStatus() } }.getOrNull() }
-                OverviewData(
-                    sys = sys.await(),
-                    clients = clients.await(),
-                    services = services.await(),
-                    security = security.await(),
-                    cascade = cascade.await(),
-                    tools = tools.await()
+                fromMetrics?.toSysInfo() ?: vm.call(server) { sysinfo() }
+            }
+        }.onFailure { android.util.Log.w("ServpanelOverview", "sysinfo: ${it.message}") }.getOrNull()
+
+        val clients = runCatching {
+            withTimeout(10_000) { vm.call(server) { clients() } }
+        }.onFailure { android.util.Log.w("ServpanelOverview", "clients: ${it.message}") }.getOrNull()
+
+        if (sys != null) {
+            val base = data
+            error = null
+            data = OverviewData(
+                sys = sys,
+                clients = clients ?: base?.clients ?: emptyList(),
+                services = base?.services ?: emptyList(),
+                security = base?.security,
+                cascade = base?.cascade,
+                tools = base?.tools
+            )
+            fromCache = false
+            withContext(Dispatchers.IO) {
+                cache.save(
+                    server.id,
+                    DashboardSnapshot(
+                        at = System.currentTimeMillis(),
+                        sys = sys,
+                        clients = clients ?: base?.clients ?: emptyList(),
+                        services = base?.services ?: emptyList(),
+                        security = base?.security
+                    )
                 )
             }
-            data = result
-        } catch (e: kotlinx.coroutines.CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            android.util.Log.e("ServpanelOverview", "Не удалось загрузить обзор", e)
-            if (data == null) error = e.message ?: "Не удалось загрузить обзор"
-        } finally {
-            loading = false
+        } else if (data == null) {
+            error = "Панель не ответила — проверьте связь"
+        }
+        loading = false
+    }
+
+    // Фаза 2: тяжёлые данные догружаются следом и не задерживают экран.
+    LaunchedEffect(server.id, vm.refreshTick, slowTick) {
+        val base = data ?: return@LaunchedEffect
+        val services = runCatching {
+            withTimeout(15_000) { vm.call(server) { services() } }
+        }.getOrNull()
+        val security = runCatching {
+            withTimeout(15_000) { vm.call(server) { securityStatus() } }
+        }.getOrNull()
+        val cascade = runCatching {
+            withTimeout(12_000) { vm.call(server) { cascadeStatus() } }
+        }.getOrNull()
+        val tools = runCatching {
+            withTimeout(12_000) { vm.call(server) { toolsStatus() } }
+        }.getOrNull()
+
+        val merged = OverviewData(
+            sys = base.sys,
+            clients = base.clients,
+            services = services ?: base.services,
+            security = security ?: base.security,
+            cascade = cascade ?: base.cascade,
+            tools = tools ?: base.tools
+        )
+        data = merged
+        if (services != null || security != null) {
+            withContext(Dispatchers.IO) {
+                cache.save(
+                    server.id,
+                    DashboardSnapshot(
+                        at = System.currentTimeMillis(),
+                        sys = merged.sys,
+                        clients = merged.clients,
+                        services = merged.services,
+                        security = merged.security
+                    )
+                )
+            }
         }
     }
 
@@ -178,7 +263,7 @@ fun OverviewScreen(vm: AppViewModel, server: ServerProfile) {
     ) {
         if (history?.range != range) historyLoading = true
         try {
-            history = vm.call(server) { history(range, "global") }
+            history = withTimeout(12_000) { vm.call(server) { history(range, "global") } }
         } catch (e: kotlinx.coroutines.CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -219,7 +304,7 @@ fun OverviewScreen(vm: AppViewModel, server: ServerProfile) {
 
         item {
             PanelCard {
-                SectionHeader("Нагрузка", "Текущее состояние сервера")
+                SectionHeader("Нагрузка", if (fromCache) "Из кэша · обновляем…" else "Текущее состояние сервера")
                 Spacer(Modifier.height(14.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
                     MetricCell(
@@ -342,6 +427,14 @@ fun OverviewScreen(vm: AppViewModel, server: ServerProfile) {
                     subtitle = "Системные сервисы панели"
                 )
                 Spacer(Modifier.height(8.dp))
+                if (current.services.isEmpty()) {
+                    Text(
+                        "Читаем службы…",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = PanelMuted,
+                        modifier = Modifier.padding(vertical = 8.dp)
+                    )
+                }
                 current.services.forEach { service ->
                     Row(
                         modifier = Modifier
@@ -391,13 +484,15 @@ fun OverviewScreen(vm: AppViewModel, server: ServerProfile) {
             }
         }
 
-        item {
-            SecurityOverviewCard(
-                security = current.security,
-                cascade = current.cascade,
-                tools = current.tools,
-                onOpen = { vm.selectTab(WorkspaceTab.Security) }
-            )
+        current.security?.let { security ->
+            item {
+                SecurityOverviewCard(
+                    security = security,
+                    cascade = current.cascade,
+                    tools = current.tools,
+                    onOpen = { vm.selectTab(WorkspaceTab.Security) }
+                )
+            }
         }
     }
 }
@@ -456,6 +551,7 @@ private fun SshNudgeCard(vm: AppViewModel, server: ServerProfile) {
 
 @Composable
 private fun StatusOverviewCard(data: OverviewData, server: ServerProfile) {
+    val security = data.security
     PanelCard {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Surface(
@@ -482,24 +578,27 @@ private fun StatusOverviewCard(data: OverviewData, server: ServerProfile) {
                     color = PanelMuted
                 )
             }
-            Badge(
-                if (data.security.isAdmin) "Админ" else "Просмотр",
-                if (data.security.isAdmin) PanelAccent else PanelAmber
-            )
+            if (security != null) {
+                Badge(
+                    if (security.isAdmin) "Админ" else "Просмотр",
+                    if (security.isAdmin) PanelAccent else PanelAmber
+                )
+            }
         }
 
         Spacer(Modifier.height(14.dp))
 
         KeyValueGrid(
             rows = listOf(
-                "Пользователь" to data.security.user,
+                "Пользователь" to (security?.user ?: "…"),
                 "Load Average" to data.sys.load,
                 "Ядра" to data.sys.cores.toString(),
-                "Node.js" to data.security.node,
-                "Порт панели" to data.security.panelPublicPort.ifBlank { data.security.panelPort },
+                "Node.js" to (security?.node ?: "…"),
+                "Порт панели" to (security?.panelPublicPort?.ifBlank { security.panelPort } ?: "…"),
                 "HTTPS" to when {
-                    data.security.httpsOn && data.security.httpsDomain.isNotBlank() -> data.security.httpsDomain
-                    data.security.httpsOn -> "включён"
+                    security == null -> "…"
+                    security.httpsOn && security.httpsDomain.isNotBlank() -> security.httpsDomain
+                    security.httpsOn -> "включён"
                     else -> "нет"
                 },
                 "Метрики" to if (server.metricsPort > 0) "порт ${server.metricsPort}" else "через API"
